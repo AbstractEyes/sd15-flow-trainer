@@ -22,8 +22,9 @@ from .base_simplex import (
     KSimplexAttentionLayer,
     StackedKSimplexAttention,
     GeometricLoss,
-    SimplexFactory,
     cayley_menger_determinant,
     compute_simplex_volume_sq,
+    pairwise_squared_distances,
     verify_simplex_unet,
+    _build_regular_simplex,
 )

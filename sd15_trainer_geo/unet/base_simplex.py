@@ -138,95 +138,58 @@ def compute_simplex_volume_sq(
 
     vol²(k-simplex) = (-1)^(k+1) / (2^k * (k!)²) * CM_det
     """
-    det = cayley_menger_determinant(squared_distances, k)
+    # Ensure float32 for det computation
+    det = cayley_menger_determinant(squared_distances.float(), k)
     sign = (-1) ** (k + 1)
     factorial_k = math.factorial(k)
     denom = (2 ** k) * (factorial_k ** 2)
-    return sign * det / denom
+    return (sign * det / denom).to(dtype=squared_distances.dtype)
 
 
 # =============================================================================
-# Simplex Template Factory
+# Simplex Template Factory (from geovocab2)
 # =============================================================================
 
-class SimplexFactory:
+try:
+    from geovocab2.shapes.factory import SimplexFactory as _GeoSimplexFactory
+    _HAS_GEOVOCAB = True
+except ImportError:
+    _HAS_GEOVOCAB = False
+
+
+def _build_regular_simplex(k: int, edim: int, scale: float = 1.0) -> torch.Tensor:
     """
-    Generates canonical regular simplex templates.
-    Ported from geovocab2's battle-tested SimplexFactory.
+    Build a regular k-simplex template using geovocab2's SimplexFactory.
 
-    Algorithm:
-        Vertex i has coordinate i = sqrt((k+1)/k), all others = -1/k.
-        This guarantees all pairwise distances = sqrt(2(k+1)/k).
-        Then center at origin and normalize to unit edge length.
+    Requires: pip install git+https://github.com/AbstractEyes/lattice_vocabulary.git
 
-    A regular k-simplex has all edge lengths equal.
-    Templates are used as deformation anchors.
+    Returns: (k+1, edim) vertex coordinates with unit edge length * scale
     """
+    if not _HAS_GEOVOCAB:
+        raise ImportError(
+            "geovocab2 is required for simplex template generation.\n"
+            "Install: pip install git+https://github.com/AbstractEyes/lattice_vocabulary.git"
+        )
 
-    @staticmethod
-    def regular(k: int, edim: int, scale: float = 1.0) -> torch.Tensor:
-        """
-        Generate regular k-simplex with all edges equal.
+    factory = _GeoSimplexFactory(k=k, embed_dim=edim, method="regular", scale=scale)
+    return factory.build_torch(dtype=torch.float32)
 
-        Uses geovocab2 construction:
-            - Fill (k+1, k+1) with -1/k
-            - Set diagonal to sqrt((k+1)/k)
-            - Embed into edim, center, normalize to unit edge
 
-        Returns: (k+1, edim) vertex coordinates
-        """
-        n = k + 1
-        assert edim >= k, f"edim ({edim}) must be >= k ({k})"
+def pairwise_squared_distances(vertices: torch.Tensor) -> torch.Tensor:
+    """
+    Compute all pairwise squared distances (vectorized).
 
-        if k == 0:
-            return torch.zeros(1, edim)
+    Args:
+        vertices: (n, edim)
 
-        # Minimal dimension: need k+1 coords for k-simplex
-        min_dim = k + 1
-
-        # Fill all coordinates with -1/k
-        vertices_minimal = torch.full((n, min_dim), -1.0 / k)
-
-        # Diagonal: sqrt((k+1)/k)
-        coef = math.sqrt((k + 1.0) / k)
-        vertices_minimal[range(n), range(min_dim)] = coef
-
-        # Embed into higher dimensional space if needed
-        if edim > min_dim:
-            vertices = torch.zeros(n, edim)
-            vertices[:, :min_dim] = vertices_minimal
-        else:
-            vertices = vertices_minimal[:, :edim]
-
-        # Center at origin
-        vertices = vertices - vertices.mean(dim=0, keepdim=True)
-
-        # Normalize to unit edge length, then apply scale
-        edge_length = (vertices[0] - vertices[1]).norm()
-        if edge_length > 1e-10:
-            vertices = vertices / edge_length * scale
-
-        return vertices
-
-    @staticmethod
-    def pairwise_squared_distances(vertices: torch.Tensor) -> torch.Tensor:
-        """
-        Compute all pairwise squared distances (vectorized).
-
-        Args:
-            vertices: (n, edim)
-
-        Returns:
-            (num_edges,) flattened upper triangle
-        """
-        # (n, 1, d) - (1, n, d) → (n, n, d) → sum → (n, n)
-        diff = vertices.unsqueeze(1) - vertices.unsqueeze(0)
-        dist_sq_matrix = (diff ** 2).sum(dim=-1)
-
-        # Extract upper triangle
-        n = vertices.shape[0]
-        i_idx, j_idx = torch.triu_indices(n, n, offset=1)
-        return dist_sq_matrix[i_idx, j_idx]
+    Returns:
+        (num_edges,) flattened upper triangle
+    """
+    diff = vertices.unsqueeze(1) - vertices.unsqueeze(0)
+    dist_sq_matrix = (diff ** 2).sum(dim=-1)
+    n = vertices.shape[0]
+    i_idx, j_idx = torch.triu_indices(n, n, offset=1)
+    return dist_sq_matrix[i_idx, j_idx]
 
 
 # =============================================================================
@@ -273,8 +236,8 @@ class KSimplexAttentionLayer(nn.Module):
         # Project features → simplex coordinates
         self.to_coords = nn.Linear(feat_dim, edim)
 
-        # Template: canonical regular simplex (frozen anchor)
-        template = SimplexFactory.regular(k, edim)
+        # Template: canonical regular simplex via geovocab2 (frozen anchor)
+        template = _build_regular_simplex(k, edim)
         self.register_buffer("template", template)  # (k+1, edim)
 
         # Learnable deformation offsets per token position
@@ -319,9 +282,14 @@ class KSimplexAttentionLayer(nn.Module):
         """
         B, T, E = coords.shape
 
+        # L2-normalize coordinates to unit sphere.
+        # This bounds pairwise squared distances to [0, 4],
+        # keeping CM determinant well-behaved at any init scale.
+        coords_norm = F.normalize(coords, p=2, dim=-1)
+
         # Pairwise squared distances between all tokens
         # (B, T, 1, E) - (B, 1, T, E) → (B, T, T)
-        diff = coords.unsqueeze(2) - coords.unsqueeze(1)
+        diff = coords_norm.unsqueeze(2) - coords_norm.unsqueeze(1)
         dist_sq = (diff ** 2).sum(dim=-1)  # (B, T, T)
 
         # Convert distances to attention: closer = higher weight
@@ -339,7 +307,7 @@ class KSimplexAttentionLayer(nn.Module):
         # Geometry info for CM validation loss
         geometry_info = {
             "dist_sq": dist_sq,
-            "coords": coords,
+            "coords": coords_norm,
         }
 
         return attn_weights, geometry_info
@@ -636,7 +604,7 @@ class GeometricLoss(nn.Module):
         count = 0
 
         for geom in all_geometry:
-            dist_sq = geom["sampled_dist_sq"]
+            dist_sq = geom["sampled_dist_sq"].float()
             k = geom["effective_k"]
 
             det = cayley_menger_determinant(dist_sq, k)
@@ -664,12 +632,12 @@ class GeometricLoss(nn.Module):
 
         volumes = []
         for geom in all_geometry:
-            dist_sq = geom["sampled_dist_sq"]
+            dist_sq = geom["sampled_dist_sq"].float()
             k = geom["effective_k"]
             vol_sq = compute_simplex_volume_sq(dist_sq, k)
             volumes.append(vol_sq.mean())
 
-        vol_stack = torch.stack(volumes)
+        vol_stack = torch.stack(volumes).float()
         # Negative std: encourage spread, not collapse
         return -torch.std(torch.log(vol_stack.abs() + 1e-10))
 
@@ -827,15 +795,15 @@ class SD15UNetSimplex(SD15UNet):
             stats["blend"] = blend.mean().item()
 
         for i, geom in enumerate(self._last_prior_info["all_geometry"]):
-            dist_sq = geom["sampled_dist_sq"]
+            dist_sq = geom["sampled_dist_sq"].float()
             k = geom["effective_k"]
             vol_sq = compute_simplex_volume_sq(dist_sq, k)
 
             stats[f"layer_{i}/vol_sq"] = vol_sq.mean().item()
             stats[f"layer_{i}/deform_scale"] = geom["deformation_scale"].item()
 
-            # Attention entropy from distances
-            dist_matrix = geom["dist_sq"]
+            # Attention entropy from distances (float32 for numerical stability)
+            dist_matrix = geom["dist_sq"].float()
             attn = F.softmax(-dist_matrix / (self.simplex_config.edim ** 0.5), dim=-1)
             entropy = -(attn * (attn + 1e-10).log()).sum(dim=-1).mean()
             stats[f"layer_{i}/entropy"] = entropy.item()
