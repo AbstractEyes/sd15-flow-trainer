@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sd15-flow-trainer"
+version = "0.1.0"
+description = "Standalone SD1.5 pipeline with geometric extensions. Pure PyTorch, config-driven, no diffusers dependency at runtime."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "AbstractPhil"},
+]
+requires-python = ">=3.10"
+keywords = ["stable-diffusion", "flow-matching", "geometric-deep-learning", "diffusion-models"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.1.0",
+    "safetensors>=0.4.0",
+    "huggingface-hub>=0.20.0",
+    "transformers>=4.36.0",
+]
+
+[project.optional-dependencies]
+train = [
+    "accelerate>=0.25.0",
+    "datasets>=2.16.0",
+    "tensorboard>=2.15.0",
+    "tqdm>=4.66.0",
+    "matplotlib>=3.8.0",
+    "Pillow>=10.0.0",
+]
+dev = [
+    "diffusers>=0.25.0",
+    "pytest>=7.4.0",
+    "ruff>=0.1.0",
+]
+all = ["sd15-flow-trainer[train,dev]"]
+
+[project.urls]
+Repository = "https://github.com/AbstractEyes/sd15-flow-trainer"
+
+[tool.setuptools.packages.find]
+include = ["sd15_trainer_geo*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

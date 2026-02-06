@@ -1,0 +1,19 @@
+======================================================================
+FULL PIPELINE TEST (CLIP + UNET + VAE)
+======================================================================
+All weights loaded successfully.
+   Prompt:     'a beautiful sunset over the ocean'
+   CLIP out:   torch.Size([1, 77, 768])
+   UNet in:    torch.Size([1, 4, 64, 64])
+   UNet out:   torch.Size([1, 4, 64, 64])
+   VAE decode: torch.Size([1, 3, 512, 512])
+
+   ✓ Full pipeline functional: CLIP -> UNet -> VAE
+
+======================================================================
+SUMMARY
+======================================================================
+   CLIP:  123,060,480 params
+   UNet:  859,520,964 params
+   VAE:   83,653,863 params
+   Total: 1,066,235,307 params

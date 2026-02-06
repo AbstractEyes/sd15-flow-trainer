@@ -1,0 +1,75 @@
+SD15VAE Standalone Architecture
+===============================
+  Total params:      83,653,863
+  Encoder:           34,163,592 (40.8%)
+  Decoder:           49,490,179 (59.2%)
+  quant_conv:        72
+  post_quant_conv:   20
+  Scale factor:      0.18215
+
+  Encode: (B, 3, H, W) -> (B, 4, H/8, W/8)
+  Decode: (B, 4, H/8, W/8) -> (B, 3, H, W)
+
+  
+======================================================================
+VAE VERIFICATION
+======================================================================
+
+1. PARAM COUNT
+   Total params: 83,653,863
+
+2. STATE_DICT KEY COMPATIBILITY
+   Reference keys: 248
+   Our keys:       248
+   Matched:        248
+   ✓ Perfect key match
+
+3. SHAPE COMPATIBILITY
+   ✓ All 248 tensors match shapes
+
+4. WEIGHT LOADING
+Missing keys (16):
+  encoder.mid_block.attentions.0.to_q.weight
+  encoder.mid_block.attentions.0.to_q.bias
+  encoder.mid_block.attentions.0.to_k.weight
+  encoder.mid_block.attentions.0.to_k.bias
+  encoder.mid_block.attentions.0.to_v.weight
+  encoder.mid_block.attentions.0.to_v.bias
+  encoder.mid_block.attentions.0.to_out.0.weight
+  encoder.mid_block.attentions.0.to_out.0.bias
+  decoder.mid_block.attentions.0.to_q.weight
+  decoder.mid_block.attentions.0.to_q.bias
+  decoder.mid_block.attentions.0.to_k.weight
+  decoder.mid_block.attentions.0.to_k.bias
+  decoder.mid_block.attentions.0.to_v.weight
+  decoder.mid_block.attentions.0.to_v.bias
+  decoder.mid_block.attentions.0.to_out.0.weight
+  decoder.mid_block.attentions.0.to_out.0.bias
+Unexpected keys (16):
+  encoder.mid_block.attentions.0.key.bias
+  encoder.mid_block.attentions.0.key.weight
+  encoder.mid_block.attentions.0.proj_attn.bias
+  encoder.mid_block.attentions.0.proj_attn.weight
+  encoder.mid_block.attentions.0.query.bias
+  encoder.mid_block.attentions.0.query.weight
+  encoder.mid_block.attentions.0.value.bias
+  encoder.mid_block.attentions.0.value.weight
+  decoder.mid_block.attentions.0.key.bias
+  decoder.mid_block.attentions.0.key.weight
+  decoder.mid_block.attentions.0.proj_attn.bias
+  decoder.mid_block.attentions.0.proj_attn.weight
+  decoder.mid_block.attentions.0.query.bias
+  decoder.mid_block.attentions.0.query.weight
+  decoder.mid_block.attentions.0.value.bias
+  decoder.mid_block.attentions.0.value.weight
+
+5. ENCODE/DECODE TEST
+   Image:   torch.Size([1, 3, 512, 512])
+   Latent:  torch.Size([1, 4, 64, 64])
+   Scaled:  [-2.490, 1.718]
+   Decoded: torch.Size([1, 3, 512, 512])
+   ✓ Encode/decode pipeline working
+
+   Encode max abs diff vs diffusers: 2.945312
+   Decode max abs diff vs diffusers: 3.132812
+   ✓ Outputs DIFFER

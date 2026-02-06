@@ -1,0 +1,64 @@
+SD15UNet Standalone Architecture
+================================
+  Total params:      859,520,964
+  Cross-attn params: 43,962,560 (5.1%)
+  Self-attn params:  49,574,080 (5.8%)
+  Other params:      765,984,324 (89.1%)
+
+  ✓ Param count matches SD1.5 reference (859,520,964)
+
+============================================================
+1. PARAM COUNT VERIFICATION
+============================================================
+  Total params: 859,520,964
+  Target:       859,520,964
+  Match: ✓
+
+============================================================
+2. STATE_DICT KEY COMPATIBILITY
+============================================================
+/usr/local/lib/python3.12/dist-packages/huggingface_hub/utils/_validators.py:202: UserWarning: The `local_dir_use_symlinks` argument is deprecated and ignored in `hf_hub_download`. Downloading to a local directory does not use symlinks anymore.
+  warnings.warn(
+  Reference keys: 686
+  Our keys:       686
+  Matched:        686
+  ✓ Perfect key match
+
+============================================================
+3. SHAPE COMPATIBILITY
+============================================================
+  ✓ All 686 tensors match shapes
+
+============================================================
+4. WEIGHT LOADING TEST
+============================================================
+All weights loaded successfully.
+
+============================================================
+5. FORWARD PASS TEST
+============================================================
+  Input:  torch.Size([1, 4, 64, 64])
+  Output: torch.Size([1, 4, 64, 64])
+  Output range: [-3.7871, 3.6914]
+  ✓ Forward pass successful
+
+============================================================
+6. CROSS-ATTENTION BLOCKS
+============================================================
+  Total: 16
+    down_blocks.0.attentions.0.transformer_blocks.0.attn2.to_k.weight: torch.Size([320, 768])  (768 -> 320)
+    down_blocks.0.attentions.1.transformer_blocks.0.attn2.to_k.weight: torch.Size([320, 768])  (768 -> 320)
+    down_blocks.1.attentions.0.transformer_blocks.0.attn2.to_k.weight: torch.Size([640, 768])  (768 -> 640)
+    down_blocks.1.attentions.1.transformer_blocks.0.attn2.to_k.weight: torch.Size([640, 768])  (768 -> 640)
+    down_blocks.2.attentions.0.transformer_blocks.0.attn2.to_k.weight: torch.Size([1280, 768])  (768 -> 1280)
+    down_blocks.2.attentions.1.transformer_blocks.0.attn2.to_k.weight: torch.Size([1280, 768])  (768 -> 1280)
+    mid_block.attentions.0.transformer_blocks.0.attn2.to_k.weight: torch.Size([1280, 768])  (768 -> 1280)
+    up_blocks.1.attentions.0.transformer_blocks.0.attn2.to_k.weight: torch.Size([1280, 768])  (768 -> 1280)
+    up_blocks.1.attentions.1.transformer_blocks.0.attn2.to_k.weight: torch.Size([1280, 768])  (768 -> 1280)
+    up_blocks.1.attentions.2.transformer_blocks.0.attn2.to_k.weight: torch.Size([1280, 768])  (768 -> 1280)
+    up_blocks.2.attentions.0.transformer_blocks.0.attn2.to_k.weight: torch.Size([640, 768])  (768 -> 640)
+    up_blocks.2.attentions.1.transformer_blocks.0.attn2.to_k.weight: torch.Size([640, 768])  (768 -> 640)
+    up_blocks.2.attentions.2.transformer_blocks.0.attn2.to_k.weight: torch.Size([640, 768])  (768 -> 640)
+    up_blocks.3.attentions.0.transformer_blocks.0.attn2.to_k.weight: torch.Size([320, 768])  (768 -> 320)
+    up_blocks.3.attentions.1.transformer_blocks.0.attn2.to_k.weight: torch.Size([320, 768])  (768 -> 320)
+    up_blocks.3.attentions.2.transformer_blocks.0.attn2.to_k.weight: torch.Size([320, 768])  (768 -> 320)

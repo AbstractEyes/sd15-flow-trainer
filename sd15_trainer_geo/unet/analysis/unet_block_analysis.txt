@@ -1,0 +1,216 @@
+Flax classes are deprecated and will be removed in Diffusers v1.0.0. We recommend migrating to PyTorch classes or pinning your version of Diffusers.
+Flax classes are deprecated and will be removed in Diffusers v1.0.0. We recommend migrating to PyTorch classes or pinning your version of Diffusers.
+/usr/local/lib/python3.12/dist-packages/huggingface_hub/utils/_validators.py:202: UserWarning: The `local_dir_use_symlinks` argument is deprecated and ignored in `hf_hub_download`. Downloading to a local directory does not use symlinks anymore.
+  warnings.warn(
+config.json: 100%
+ 743/743 [00:00<00:00, 97.3kB/s]
+unet/diffusion_pytorch_model.safetensors: 100%
+ 3.44G/3.44G [00:09<00:00, 246MB/s]
+config.json: 100%
+ 617/617 [00:00<00:00, 78.2kB/s]
+text_encoder/model.safetensors: 100%
+ 492M/492M [00:00<00:00, 832MB/s]
+Loading weights: 100%
+ 196/196 [00:00<00:00, 862.69it/s, Materializing param=text_model.final_layer_norm.weight]
+CLIPTextModel LOAD REPORT from: sd-legacy/stable-diffusion-v1-5
+Key                                | Status     |  |
+-----------------------------------+------------+--+-
+text_model.embeddings.position_ids | UNEXPECTED |  |
+
+Notes:
+- UNEXPECTED	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+tokenizer_config.json: 100%
+ 806/806 [00:00<00:00, 105kB/s]
+vocab.json: 
+ 1.06M/? [00:00<00:00, 9.72MB/s]
+merges.txt: 
+ 525k/? [00:00<00:00, 8.14MB/s]
+special_tokens_map.json: 100%
+ 472/472 [00:00<00:00, 62.7kB/s]
+================================================================================
+CLIP TEXT ENCODER
+================================================================================
+  Max tokens: 77
+  Vocab size: 49408
+  Hidden dim: 768
+  Num layers: 12
+  Num heads:  12
+  Output shape: (batch, 77, 768)
+
+================================================================================
+UNET CROSS-ATTENTION MAP
+================================================================================
+
+--- DOWN BLOCKS ---
+
+  Block 0: down_blocks[0][0].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=320 -> out=320, heads=8
+    Cross-Attn (attn2): Q in=320 -> out=320
+                        K in=768 -> out=320  [CLIP sequence enters here]
+                        V in=768 -> out=320
+                        heads=8, head_dim=40
+                        to_out: 320 -> 320
+                        cross-attn params: 696,640
+
+  Block 1: down_blocks[0][1].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=320 -> out=320, heads=8
+    Cross-Attn (attn2): Q in=320 -> out=320
+                        K in=768 -> out=320  [CLIP sequence enters here]
+                        V in=768 -> out=320
+                        heads=8, head_dim=40
+                        to_out: 320 -> 320
+                        cross-attn params: 696,640
+
+  Block 2: down_blocks[1][0].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=640 -> out=640, heads=8
+    Cross-Attn (attn2): Q in=640 -> out=640
+                        K in=768 -> out=640  [CLIP sequence enters here]
+                        V in=768 -> out=640
+                        heads=8, head_dim=80
+                        to_out: 640 -> 640
+                        cross-attn params: 1,802,880
+
+  Block 3: down_blocks[1][1].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=640 -> out=640, heads=8
+    Cross-Attn (attn2): Q in=640 -> out=640
+                        K in=768 -> out=640  [CLIP sequence enters here]
+                        V in=768 -> out=640
+                        heads=8, head_dim=80
+                        to_out: 640 -> 640
+                        cross-attn params: 1,802,880
+
+  Block 4: down_blocks[2][0].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=1280 -> out=1280, heads=8
+    Cross-Attn (attn2): Q in=1280 -> out=1280
+                        K in=768 -> out=1280  [CLIP sequence enters here]
+                        V in=768 -> out=1280
+                        heads=8, head_dim=160
+                        to_out: 1280 -> 1280
+                        cross-attn params: 5,244,160
+
+  Block 5: down_blocks[2][1].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=1280 -> out=1280, heads=8
+    Cross-Attn (attn2): Q in=1280 -> out=1280
+                        K in=768 -> out=1280  [CLIP sequence enters here]
+                        V in=768 -> out=1280
+                        heads=8, head_dim=160
+                        to_out: 1280 -> 1280
+                        cross-attn params: 5,244,160
+
+--- MID BLOCK ---
+
+  Block 6: mid_block[0].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=1280 -> out=1280, heads=8
+    Cross-Attn (attn2): Q in=1280 -> out=1280
+                        K in=768 -> out=1280  [CLIP sequence enters here]
+                        V in=768 -> out=1280
+                        heads=8, head_dim=160
+                        to_out: 1280 -> 1280
+                        cross-attn params: 5,244,160
+
+--- UP BLOCKS ---
+
+  Block 7: up_blocks[1][0].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=1280 -> out=1280, heads=8
+    Cross-Attn (attn2): Q in=1280 -> out=1280
+                        K in=768 -> out=1280  [CLIP sequence enters here]
+                        V in=768 -> out=1280
+                        heads=8, head_dim=160
+                        to_out: 1280 -> 1280
+                        cross-attn params: 5,244,160
+
+  Block 8: up_blocks[1][1].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=1280 -> out=1280, heads=8
+    Cross-Attn (attn2): Q in=1280 -> out=1280
+                        K in=768 -> out=1280  [CLIP sequence enters here]
+                        V in=768 -> out=1280
+                        heads=8, head_dim=160
+                        to_out: 1280 -> 1280
+                        cross-attn params: 5,244,160
+
+  Block 9: up_blocks[1][2].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=1280 -> out=1280, heads=8
+    Cross-Attn (attn2): Q in=1280 -> out=1280
+                        K in=768 -> out=1280  [CLIP sequence enters here]
+                        V in=768 -> out=1280
+                        heads=8, head_dim=160
+                        to_out: 1280 -> 1280
+                        cross-attn params: 5,244,160
+
+  Block 10: up_blocks[2][0].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=640 -> out=640, heads=8
+    Cross-Attn (attn2): Q in=640 -> out=640
+                        K in=768 -> out=640  [CLIP sequence enters here]
+                        V in=768 -> out=640
+                        heads=8, head_dim=80
+                        to_out: 640 -> 640
+                        cross-attn params: 1,802,880
+
+  Block 11: up_blocks[2][1].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=640 -> out=640, heads=8
+    Cross-Attn (attn2): Q in=640 -> out=640
+                        K in=768 -> out=640  [CLIP sequence enters here]
+                        V in=768 -> out=640
+                        heads=8, head_dim=80
+                        to_out: 640 -> 640
+                        cross-attn params: 1,802,880
+
+  Block 12: up_blocks[2][2].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=640 -> out=640, heads=8
+    Cross-Attn (attn2): Q in=640 -> out=640
+                        K in=768 -> out=640  [CLIP sequence enters here]
+                        V in=768 -> out=640
+                        heads=8, head_dim=80
+                        to_out: 640 -> 640
+                        cross-attn params: 1,802,880
+
+  Block 13: up_blocks[3][0].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=320 -> out=320, heads=8
+    Cross-Attn (attn2): Q in=320 -> out=320
+                        K in=768 -> out=320  [CLIP sequence enters here]
+                        V in=768 -> out=320
+                        heads=8, head_dim=40
+                        to_out: 320 -> 320
+                        cross-attn params: 696,640
+
+  Block 14: up_blocks[3][1].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=320 -> out=320, heads=8
+    Cross-Attn (attn2): Q in=320 -> out=320
+                        K in=768 -> out=320  [CLIP sequence enters here]
+                        V in=768 -> out=320
+                        heads=8, head_dim=40
+                        to_out: 320 -> 320
+                        cross-attn params: 696,640
+
+  Block 15: up_blocks[3][2].transformer_blocks[0]
+    Self-Attn (attn1):  Q/K/V in=320 -> out=320, heads=8
+    Cross-Attn (attn2): Q in=320 -> out=320
+                        K in=768 -> out=320  [CLIP sequence enters here]
+                        V in=768 -> out=320
+                        heads=8, head_dim=40
+                        to_out: 320 -> 320
+                        cross-attn params: 696,640
+
+================================================================================
+TOTAL CROSS-ATTENTION BLOCKS: 16
+
+================================================================================
+SUMMARY: CLIP -> UNET INTERFACE
+================================================================================
+  CLIP output:     (B, 77, 768)
+  encoder_hidden_states passed as K,V to every cross-attn block
+  UNet spatial dims at each level:
+    down[0]: channels=320, has_cross_attn=True
+    down[1]: channels=640, has_cross_attn=True
+    down[2]: channels=1280, has_cross_attn=True
+    down[3]: channels=1280, has_cross_attn=False
+    mid:    channels=1280, has_cross_attn=True
+    up[0]:   channels=1280, has_cross_attn=False
+    up[1]:   channels=1280, has_cross_attn=True
+    up[2]:   channels=640, has_cross_attn=True
+    up[3]:   channels=320, has_cross_attn=True
+
+  UNet total params:      859,520,964
+  Cross-attn params:      43,962,560 (5.1%)
+  Self-attn params:       49,574,080 (5.8%)
+  Everything else:        765,984,324 (89.1%)

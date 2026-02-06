@@ -1,0 +1,48 @@
+CLIPTextModel Standalone Architecture
+=====================================
+  Total params:      123,060,480
+  Vocab size:        49408
+  Hidden dim:        768
+  Layers:            12
+  Heads:             12
+  Intermediate:      3072
+  Max tokens:        77
+  Output shape:      (B, 77, 768)
+
+  Embeddings:        38,004,480 (30.9%)
+  Encoder layers:    85,054,464 (69.1%)
+  Final layer norm:  1,536 (0.0%)
+
+
+  ======================================================================
+CLIP TEXT ENCODER VERIFICATION
+======================================================================
+
+1. PARAM COUNT
+   Total params: 123,060,480
+
+2. STATE_DICT KEY COMPATIBILITY
+Loading weights: 100%
+ 196/196 [00:00<00:00, 945.70it/s, Materializing param=text_model.final_layer_norm.weight]
+CLIPTextModel LOAD REPORT from: sd-legacy/stable-diffusion-v1-5
+Key                                | Status     |  |
+-----------------------------------+------------+--+-
+text_model.embeddings.position_ids | UNEXPECTED |  |
+
+Notes:
+- UNEXPECTED	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+   Reference keys (excl buffers): 196
+   Our keys (excl buffers):       196
+   Matched:                       196
+   ✓ Perfect key match
+
+3. SHAPE COMPATIBILITY
+   ✓ All 196 tensors match shapes
+
+4. WEIGHT LOADING + FORWARD PASS
+All CLIP weights loaded successfully.
+   Input shape:  torch.Size([1, 77])
+   Output shape: torch.Size([1, 77, 768])
+   Ref shape:    torch.Size([1, 77, 768])
+   Max abs diff: 0.019531
+   ✓ Outputs DIFFER (threshold 0.01)
