@@ -546,6 +546,13 @@ class KSimplexCrossAttentionPrior(nn.Module):
         B = encoder_hidden_states.shape[0]
         input_dtype = encoder_hidden_states.dtype
 
+        # Ensure geo_prior weights are fp32 (one-time cast on first inference call).
+        # geo_prior is only 4.8M params (~19MB) — dtype cast is negligible.
+        # During training, _freeze_backbone already calls .float().
+        # During inference, pipeline may load in fp16 — this fixes it.
+        if next(self.parameters()).dtype != torch.float32:
+            self.float()
+
         # Run geo_prior in fp32 for stable CM determinants / volume computation
         with torch.amp.autocast("cuda", enabled=False):
             hs_fp32 = encoder_hidden_states.float()
