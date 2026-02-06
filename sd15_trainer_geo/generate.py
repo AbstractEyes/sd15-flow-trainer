@@ -17,6 +17,7 @@ License: MIT
 
 from __future__ import annotations
 
+import os
 import torch
 from typing import Optional, Union, List, TYPE_CHECKING
 from dataclasses import dataclass
@@ -235,10 +236,21 @@ def save_images(
 
     Args:
         output:         GenerateOutput from generate()
-        path_template:  Path with {i} placeholder for image index
+        path_template:  Path with {i} placeholder, OR a directory path
+                        (images saved as 00.png, 01.png, etc.)
     """
     from PIL import Image
     import numpy as np
+
+    # If path_template looks like a directory (no {i} and no extension), treat it as one
+    if "{i" not in path_template and not os.path.splitext(path_template)[1]:
+        os.makedirs(path_template, exist_ok=True)
+        path_template = os.path.join(path_template, "{i:03d}.png")
+
+    # Ensure parent directory exists
+    parent = os.path.dirname(path_template.format(i=0))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
 
     for i in range(output.images.shape[0]):
         img = output.images[i].cpu().float().clamp(0, 1)
