@@ -29,7 +29,7 @@ dependencies = [
     "safetensors>=0.4.0",
     "huggingface-hub>=0.20.0",
     "transformers>=4.36.0",
-    "lattice-vocabulary @ git+https://github.com/AbstractEyes/lattice_vocabulary.git",
+    "geometricvocab @ git+https://github.com/AbstractEyes/lattice_vocabulary.git",
 ]
 
 [project.optional-dependencies]
