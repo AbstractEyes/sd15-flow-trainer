@@ -14,3 +14,16 @@ from .base import (
     UpBlock2D,
     UNetMidBlock2DCrossAttn,
 )
+
+from .base_simplex import (
+    SD15UNetSimplex,
+    SimplexConfig,
+    KSimplexCrossAttentionPrior,
+    KSimplexAttentionLayer,
+    StackedKSimplexAttention,
+    GeometricLoss,
+    SimplexFactory,
+    cayley_menger_determinant,
+    compute_simplex_volume_sq,
+    verify_simplex_unet,
+)
