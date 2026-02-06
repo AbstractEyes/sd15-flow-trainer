@@ -110,19 +110,23 @@ def cayley_menger_determinant(
     """
     n = k + 1
     B = squared_distances.shape[0]
+    orig_dtype = squared_distances.dtype
 
-    cm = torch.zeros(B, n + 1, n + 1, device=squared_distances.device, dtype=squared_distances.dtype)
+    # linalg.det requires float32+ (not supported for half)
+    sq = squared_distances.float()
+
+    cm = torch.zeros(B, n + 1, n + 1, device=sq.device, dtype=torch.float32)
     cm[:, 0, 1:] = 1.0
     cm[:, 1:, 0] = 1.0
 
     pair_idx = 0
     for i in range(n):
         for j in range(i + 1, n):
-            cm[:, i + 1, j + 1] = squared_distances[:, pair_idx]
-            cm[:, j + 1, i + 1] = squared_distances[:, pair_idx]
+            cm[:, i + 1, j + 1] = sq[:, pair_idx]
+            cm[:, j + 1, i + 1] = sq[:, pair_idx]
             pair_idx += 1
 
-    return torch.linalg.det(cm)
+    return torch.linalg.det(cm).to(dtype=orig_dtype)
 
 
 def compute_simplex_volume_sq(
