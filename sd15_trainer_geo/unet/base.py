@@ -28,7 +28,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple, List, Union
 
-from config.model_config import UNetConfig
+from ..config.model_config import UNetConfig
 
 
 # =============================================================================
