@@ -269,17 +269,18 @@ class Trainer:
             json.dump(asdict(config), f, indent=2)
 
     def _freeze_backbone(self):
-        """Freeze everything except geo_prior."""
+        """Freeze everything except geo_prior. Keep geo_prior in float32."""
         # Freeze entire UNet
         for p in self.pipe.unet.parameters():
             p.requires_grad_(False)
-        # Unfreeze geo_prior
+        # Unfreeze geo_prior and ensure float32 for grad scaler
+        self.pipe.unet.geo_prior.float()
         for p in self.pipe.unet.geo_prior.parameters():
             p.requires_grad_(True)
 
         trainable = sum(p.numel() for p in self.pipe.unet.parameters() if p.requires_grad)
         frozen = sum(p.numel() for p in self.pipe.unet.parameters() if not p.requires_grad)
-        print(f"Trainable: {trainable:,}  Frozen: {frozen:,}  "
+        print(f"Trainable: {trainable:,} (float32)  Frozen: {frozen:,}  "
               f"({trainable / (trainable + frozen) * 100:.2f}% trainable)")
 
     # -----------------------------------------------------------------
