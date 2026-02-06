@@ -548,7 +548,7 @@ def verify_pipeline(pipe: Pipeline):
     print("\nVerifying pipeline...")
     pipe.unet.train()
 
-    with torch.cuda.amp.autocast(dtype=pipe.dtype):
+    with torch.amp.autocast("cuda", dtype=pipe.dtype):
         noise = torch.randn(1, 4, 64, 64, device=pipe.device, dtype=pipe.dtype)
         timestep = torch.tensor([500], device=pipe.device)
         enc_hs = torch.randn(1, 77, 768, device=pipe.device, dtype=pipe.dtype)
