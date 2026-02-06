@@ -236,7 +236,7 @@ def load_clip_text_encoder(
     """
     from safetensors.torch import load_file
     from huggingface_hub import hf_hub_download
-    from config.model_config import load_clip_config
+    from ..config.model_config import load_clip_config
 
     if config is None:
         config = load_clip_config(repo_id)
