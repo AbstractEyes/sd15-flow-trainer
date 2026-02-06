@@ -148,6 +148,12 @@ def compute_simplex_volume_sq(
 class SimplexFactory:
     """
     Generates canonical regular simplex templates.
+    Ported from geovocab2's battle-tested SimplexFactory.
+
+    Algorithm:
+        Vertex i has coordinate i = sqrt((k+1)/k), all others = -1/k.
+        This guarantees all pairwise distances = sqrt(2(k+1)/k).
+        Then center at origin and normalize to unit edge length.
 
     A regular k-simplex has all edge lengths equal.
     Templates are used as deformation anchors.
@@ -156,45 +162,52 @@ class SimplexFactory:
     @staticmethod
     def regular(k: int, edim: int, scale: float = 1.0) -> torch.Tensor:
         """
-        Generate regular k-simplex vertices in edim dimensions.
+        Generate regular k-simplex with all edges equal.
+
+        Uses geovocab2 construction:
+            - Fill (k+1, k+1) with -1/k
+            - Set diagonal to sqrt((k+1)/k)
+            - Embed into edim, center, normalize to unit edge
 
         Returns: (k+1, edim) vertex coordinates
         """
         n = k + 1
         assert edim >= k, f"edim ({edim}) must be >= k ({k})"
 
-        vertices = torch.zeros(n, edim)
+        if k == 0:
+            return torch.zeros(1, edim)
 
-        for i in range(k):
-            # Place vertex i along axis i
-            vertices[i, i] = scale
+        # Minimal dimension: need k+1 coords for k-simplex
+        min_dim = k + 1
 
-            # Adjust previous vertices to maintain equidistance
-            for j in range(i):
-                vertices[i, j] = vertices[j, j] / (i + 1)
+        # Fill all coordinates with -1/k
+        vertices_minimal = torch.full((n, min_dim), -1.0 / k)
 
-            # Scale to maintain unit edge length
-            sq_sum = (vertices[i, :i+1] ** 2).sum()
-            if sq_sum < scale ** 2:
-                vertices[i, i] = (scale ** 2 - sq_sum).sqrt()
+        # Diagonal: sqrt((k+1)/k)
+        coef = math.sqrt((k + 1.0) / k)
+        vertices_minimal[range(n), range(min_dim)] = coef
 
-        # Last vertex: centroid-based placement
-        centroid = vertices[:k].mean(dim=0)
-        vertices[k] = centroid
+        # Embed into higher dimensional space if needed
+        if edim > min_dim:
+            vertices = torch.zeros(n, edim)
+            vertices[:, :min_dim] = vertices_minimal
+        else:
+            vertices = vertices_minimal[:, :edim]
 
-        # Adjust last vertex distance
-        d_sq = ((vertices[0] - centroid) ** 2).sum()
-        target_d_sq = scale ** 2
-        if d_sq > 0:
-            correction = (target_d_sq / d_sq).sqrt()
-            vertices[k] = centroid * (1.0 - correction) + vertices[0] * correction
+        # Center at origin
+        vertices = vertices - vertices.mean(dim=0, keepdim=True)
+
+        # Normalize to unit edge length, then apply scale
+        edge_length = (vertices[0] - vertices[1]).norm()
+        if edge_length > 1e-10:
+            vertices = vertices / edge_length * scale
 
         return vertices
 
     @staticmethod
     def pairwise_squared_distances(vertices: torch.Tensor) -> torch.Tensor:
         """
-        Compute all pairwise squared distances.
+        Compute all pairwise squared distances (vectorized).
 
         Args:
             vertices: (n, edim)
@@ -202,13 +215,14 @@ class SimplexFactory:
         Returns:
             (num_edges,) flattened upper triangle
         """
+        # (n, 1, d) - (1, n, d) → (n, n, d) → sum → (n, n)
+        diff = vertices.unsqueeze(1) - vertices.unsqueeze(0)
+        dist_sq_matrix = (diff ** 2).sum(dim=-1)
+
+        # Extract upper triangle
         n = vertices.shape[0]
-        dists = []
-        for i in range(n):
-            for j in range(i + 1, n):
-                d_sq = ((vertices[i] - vertices[j]) ** 2).sum()
-                dists.append(d_sq)
-        return torch.stack(dists)
+        i_idx, j_idx = torch.triu_indices(n, n, offset=1)
+        return dist_sq_matrix[i_idx, j_idx]
 
 
 # =============================================================================
@@ -555,7 +569,7 @@ class KSimplexCrossAttentionPrior(nn.Module):
             self.config.timestep_conditioned
             and timestep_normalized is not None
         ):
-            t_input = timestep_normalized.float().unsqueeze(-1)  # (B, 1)
+            t_input = timestep_normalized.to(dtype=encoder_hidden_states.dtype).unsqueeze(-1)  # (B, 1)
             deform_factors = self.deform_schedule(t_input)  # (B, num_layers)
 
             # Scale deformation per layer: high t → more deform, low t → less
@@ -570,7 +584,7 @@ class KSimplexCrossAttentionPrior(nn.Module):
 
         # Residual blend
         if self.config.residual_blend == "timestep" and timestep_normalized is not None:
-            t_input = timestep_normalized.float().unsqueeze(-1)
+            t_input = timestep_normalized.to(dtype=encoder_hidden_states.dtype).unsqueeze(-1)
             blend = torch.sigmoid(self.blend_mlp(t_input))  # (B, 1)
             blend = blend.unsqueeze(1)  # (B, 1, 1)
         elif hasattr(self, "blend_logit"):
@@ -731,7 +745,7 @@ class SD15UNetSimplex(SD15UNet):
 
         # Normalize timestep to [0, 1] for geometric conditioning
         # SD1.5 uses timesteps 0-999
-        timestep_normalized = timestep.float() / 1000.0
+        timestep_normalized = timestep.to(dtype=sample.dtype) / 1000.0
 
         t_emb = get_timestep_embedding(
             timestep,
