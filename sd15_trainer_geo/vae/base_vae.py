@@ -74,17 +74,16 @@ class VAEResnetBlock(nn.Module):
 # =============================================================================
 
 class VAEAttention(nn.Module):
-    """Single-head spatial self-attention with GroupNorm.
-    Uses legacy key names: query, key, value, proj_attn"""
+    """Single-head spatial self-attention with GroupNorm."""
     def __init__(self, channels: int, norm_groups: int = 32, norm_eps: float = 1e-6):
         super().__init__()
         self.channels = channels
         self.group_norm = nn.GroupNorm(norm_groups, channels, eps=norm_eps, affine=True)
 
-        self.query = nn.Linear(channels, channels)
-        self.key = nn.Linear(channels, channels)
-        self.value = nn.Linear(channels, channels)
-        self.proj_attn = nn.Linear(channels, channels)
+        self.to_q = nn.Linear(channels, channels)
+        self.to_k = nn.Linear(channels, channels)
+        self.to_v = nn.Linear(channels, channels)
+        self.to_out = nn.ModuleList([nn.Linear(channels, channels)])
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         B, C, H, W = hidden_states.shape
@@ -93,16 +92,16 @@ class VAEAttention(nn.Module):
         hidden_states = self.group_norm(hidden_states)
         hidden_states = hidden_states.permute(0, 2, 3, 1).reshape(B, H * W, C)
 
-        q = self.query(hidden_states)
-        k = self.key(hidden_states)
-        v = self.value(hidden_states)
+        q = self.to_q(hidden_states)
+        k = self.to_k(hidden_states)
+        v = self.to_v(hidden_states)
 
         scale = C ** -0.5
         attn = torch.bmm(q, k.transpose(-1, -2)) * scale
         attn = F.softmax(attn, dim=-1)
         hidden_states = torch.bmm(attn, v)
 
-        hidden_states = self.proj_attn(hidden_states)
+        hidden_states = self.to_out[0](hidden_states)
         hidden_states = hidden_states.reshape(B, H, W, C).permute(0, 3, 1, 2)
 
         return hidden_states + residual
@@ -368,7 +367,10 @@ class SD15VAE(nn.Module):
         if sample:
             logvar = torch.clamp(logvar, -30.0, 20.0)
             std = torch.exp(0.5 * logvar)
-            z = mean + std * torch.randn_like(mean, generator=generator)
+            if generator is not None:
+                z = mean + std * torch.randn(mean.shape, dtype=mean.dtype, device="cpu", generator=generator).to(mean.device)
+            else:
+                z = mean + std * torch.randn_like(mean)
             return z
         else:
             return mean
