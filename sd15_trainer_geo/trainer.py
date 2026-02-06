@@ -495,13 +495,14 @@ class Trainer:
         sample_dir = os.path.join(self.config.output_dir, "samples")
         os.makedirs(sample_dir, exist_ok=True)
 
-        out = generate(
-            self.pipe,
-            self.config.sample_prompts,
-            num_steps=self.config.sample_steps,
-            cfg_scale=self.config.sample_cfg,
-            seed=self.config.seed,
-        )
+        with torch.amp.autocast("cuda", dtype=self.dtype):
+            out = generate(
+                self.pipe,
+                self.config.sample_prompts,
+                num_steps=self.config.sample_steps,
+                cfg_scale=self.config.sample_cfg,
+                seed=self.config.seed,
+            )
         save_images(
             out,
             path_template=os.path.join(sample_dir, f"step{step:06d}_{{i:02d}}.png"),
