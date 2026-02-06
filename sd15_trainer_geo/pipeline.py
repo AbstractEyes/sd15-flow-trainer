@@ -18,13 +18,13 @@ import torch.nn as nn
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 
-from config.model_config import (
+from .config.model_config import (
     UNetConfig, VAEConfig, CLIPConfig,
     load_unet_config, load_vae_config, load_clip_config,
 )
-from unet.base_simplex import SD15UNetSimplex, SimplexConfig
-from text_encoder.base import CLIPTextModel, load_clip_text_encoder, get_tokenizer, tokenize
-from vae.base_vae import SD15VAE, load_sd15_vae
+from .unet.base_simplex import SD15UNetSimplex, SimplexConfig
+from .text_encoder.base import CLIPTextModel, load_clip_text_encoder, get_tokenizer, tokenize
+from .vae.base_vae import SD15VAE, load_sd15_vae
 
 
 # =============================================================================
@@ -406,7 +406,7 @@ the {16} cross-attention blocks in the UNet.
 ## Usage
 
 ```python
-from pipeline import load_pipeline, load_geo_from_hub
+from sd15_trainer_geo.pipeline import load_pipeline, load_geo_from_hub
 
 # Load base SD1.5 + fresh geo prior
 pipe = load_pipeline()
