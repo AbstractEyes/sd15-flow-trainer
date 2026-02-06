@@ -1,3 +1,4 @@
+git+https://github.com/AbstractEyes/lattice_vocabulary.git
 torch
 safetensors
 numpy
