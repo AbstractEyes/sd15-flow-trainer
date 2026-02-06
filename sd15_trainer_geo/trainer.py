@@ -329,12 +329,11 @@ class Trainer:
         #    and is INDEPENDENT of the shift (shift only changes where we sample)
         v_target = noise - latent
 
-        # 5. Integer timesteps for UNet conditioning
-        #    Use shifted t so the model sees the same (x_t, t) at train and inference
+        # 5. Integer timesteps for UNet embedding
         timesteps = (t * 1000.0).long().clamp(0, 999)
 
-        # Forward pass
-        v_pred = self.pipe.unet(x_t, timesteps, encoder_hidden_states)
+        # Forward pass — pass continuous t for geo_prior deformation schedule
+        v_pred = self.pipe.unet(x_t, timesteps, encoder_hidden_states, t_continuous=t)
 
         # Task loss: MSE on velocity prediction
         task_loss = F.mse_loss(v_pred.float(), v_target.float())
@@ -353,7 +352,7 @@ class Trainer:
             "loss": total_loss,
             "task_loss": task_loss,
             "geo_loss": geo_total,
-            "geo_weight": torch.tensor(geo_weight),
+            "geo_weight": geo_weight,
             "t_mean": t.mean(),
             "t_std": t.std(),
             **{f"geo/{k}": v for k, v in geo_parts.items()},

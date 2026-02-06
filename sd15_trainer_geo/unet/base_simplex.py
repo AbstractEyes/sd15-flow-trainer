@@ -340,10 +340,13 @@ class KSimplexAttentionLayer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        effective_deform_scale: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         Args:
             hidden_states: (B, T, feat_dim)
+            effective_deform_scale: Optional override for deformation_scale.
+                                   If provided, used instead of self.deformation_scale.
 
         Returns:
             output: (B, T, feat_dim)
@@ -363,7 +366,10 @@ class KSimplexAttentionLayer(nn.Module):
         vertex_weights = F.softmax(vertex_logits, dim=-1)    # (B, T, k+1)
 
         # Deformed template: base template + learned offsets
-        deform_scale = torch.clamp(self.deformation_scale, 0.05, 0.5)
+        if effective_deform_scale is not None:
+            deform_scale = effective_deform_scale
+        else:
+            deform_scale = torch.clamp(self.deformation_scale, 0.05, 0.5)
         deformed = self.template + self.deformation_offsets * deform_scale  # (k+1, edim)
 
         # Blend template coordinates into token coords via soft assignment
@@ -440,18 +446,21 @@ class StackedKSimplexAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        effective_deform_scales: Optional[List[torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, List[Dict[str, torch.Tensor]]]:
         """
         Args:
             hidden_states: (B, T, feat_dim)
+            effective_deform_scales: Optional per-layer deformation scale overrides
 
         Returns:
             output: (B, T, feat_dim)
             all_geometry: list of per-layer geometry dicts
         """
         all_geometry = []
-        for layer in self.layers:
-            hidden_states, geom = layer(hidden_states)
+        for i, layer in enumerate(self.layers):
+            scale = effective_deform_scales[i] if effective_deform_scales is not None else None
+            hidden_states, geom = layer(hidden_states, effective_deform_scale=scale)
             all_geometry.append(geom)
 
         return hidden_states, all_geometry
@@ -535,37 +544,52 @@ class KSimplexCrossAttentionPrior(nn.Module):
             prior_info: dict with geometry data and blend values
         """
         B = encoder_hidden_states.shape[0]
+        input_dtype = encoder_hidden_states.dtype
 
-        # Phase 3: timestep-conditioned deformation
-        if (
-            self.config.timestep_conditioned
-            and timestep_normalized is not None
-        ):
-            t_input = timestep_normalized.to(dtype=encoder_hidden_states.dtype).unsqueeze(-1)  # (B, 1)
-            deform_factors = self.deform_schedule(t_input)  # (B, num_layers)
+        # Run geo_prior in fp32 for stable CM determinants / volume computation
+        with torch.amp.autocast("cuda", enabled=False):
+            hs_fp32 = encoder_hidden_states.float()
 
-            # Scale deformation per layer: high t → more deform, low t → less
-            for i, layer in enumerate(self.attention.layers):
-                factor = deform_factors[:, i].mean()  # batch average for shared param
-                layer.deformation_scale.data.copy_(
-                    layer.deformation_scale.data * (0.5 + factor)
-                )
+            # Phase 3: timestep-conditioned deformation
+            # Compute effective scales WITHOUT mutating parameters
+            effective_deform_scales = None
+            if (
+                self.config.timestep_conditioned
+                and timestep_normalized is not None
+            ):
+                t_input = timestep_normalized.float().unsqueeze(-1)  # (B, 1)
+                deform_factors = self.deform_schedule(t_input)  # (B, num_layers)
 
-        # Geometric attention modulation
-        modulated, all_geometry = self.attention(encoder_hidden_states)
+                # Compute effective scale per layer: base_scale * (0.5 + factor)
+                # factor is in [0, 1] via Sigmoid, so effective multiplier is [0.5, 1.5]
+                effective_deform_scales = []
+                for i, layer in enumerate(self.attention.layers):
+                    factor = deform_factors[:, i].mean()  # scalar
+                    base_scale = torch.clamp(layer.deformation_scale, 0.05, 0.5)
+                    eff_scale = base_scale * (0.5 + factor)
+                    eff_scale = torch.clamp(eff_scale, 0.05, 0.5)
+                    effective_deform_scales.append(eff_scale)
 
-        # Residual blend
-        if self.config.residual_blend == "timestep" and timestep_normalized is not None:
-            t_input = timestep_normalized.to(dtype=encoder_hidden_states.dtype).unsqueeze(-1)
-            blend = torch.sigmoid(self.blend_mlp(t_input))  # (B, 1)
-            blend = blend.unsqueeze(1)  # (B, 1, 1)
-        elif hasattr(self, "blend_logit"):
-            blend = torch.sigmoid(self.blend_logit)
-        else:
-            blend = 0.5
+            # Geometric attention modulation
+            modulated, all_geometry = self.attention(
+                hs_fp32, effective_deform_scales=effective_deform_scales
+            )
 
-        # Blend: original + geometric modulation
-        output = (1.0 - blend) * encoder_hidden_states + blend * modulated
+            # Residual blend
+            if self.config.residual_blend == "timestep" and timestep_normalized is not None:
+                t_input = timestep_normalized.float().unsqueeze(-1)
+                blend = torch.sigmoid(self.blend_mlp(t_input))  # (B, 1)
+                blend = blend.unsqueeze(1)  # (B, 1, 1)
+            elif hasattr(self, "blend_logit"):
+                blend = torch.sigmoid(self.blend_logit)
+            else:
+                blend = 0.5
+
+            # Blend: original + geometric modulation
+            output_fp32 = (1.0 - blend) * hs_fp32 + blend * modulated
+
+        # Cast back to pipeline dtype
+        output = output_fp32.to(input_dtype)
 
         prior_info = {
             "all_geometry": all_geometry,
@@ -702,10 +726,19 @@ class SD15UNetSimplex(SD15UNet):
         sample: torch.Tensor,
         timestep: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
+        t_continuous: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Same interface as SD15UNet, but encoder_hidden_states
         are geometrically modulated before entering cross-attention.
+
+        Args:
+            sample: (B, 4, H, W) noisy latent
+            timestep: (B,) integer timesteps [0, 999]
+            encoder_hidden_states: (B, 77, 768) CLIP embeddings
+            t_continuous: (B,) optional continuous t in [0,1] for geo_prior.
+                          If provided, used instead of timestep/1000 for
+                          deformation schedule (avoids quantization artifacts).
         """
         cfg = self.config
 
@@ -715,9 +748,12 @@ class SD15UNetSimplex(SD15UNet):
         if timestep.dim() == 0:
             timestep = timestep.unsqueeze(0).expand(sample.shape[0])
 
-        # Normalize timestep to [0, 1] for geometric conditioning
-        # SD1.5 uses timesteps 0-999
-        timestep_normalized = timestep.to(dtype=sample.dtype) / 1000.0
+        # Normalized timestep for geometric conditioning
+        # Use continuous t if available (training), else derive from int timestep (inference)
+        if t_continuous is not None:
+            timestep_normalized = t_continuous.to(dtype=torch.float32)
+        else:
+            timestep_normalized = timestep.to(dtype=torch.float32) / 1000.0
 
         t_emb = get_timestep_embedding(
             timestep,
