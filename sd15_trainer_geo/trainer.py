@@ -53,7 +53,7 @@ class TrainConfig:
     # --- Core ---
     num_steps: int = 10000
     batch_size: int = 4
-    learning_rate: float = 1e-4
+    base_lr: float = 1e-4
     weight_decay: float = 0.01
 
     # --- Flow matching ---
@@ -63,6 +63,13 @@ class TrainConfig:
     t_sample: str = "logit_normal"  # "uniform" or "logit_normal"
     logit_normal_mean: float = 0.0
     logit_normal_std: float = 1.0
+
+    # --- CFG dropout ---
+    cfg_dropout: float = 0.1        # Probability of zeroing encoder_hidden_states
+                                     # Critical: teaches geo_prior the unconditional path
+
+    # --- Min-SNR weighting ---
+    min_snr_gamma: float = 5.0      # Min-SNR gamma for loss weighting (0 = disabled)
 
     # --- Geometric loss ---
     geo_loss_weight: float = 0.01   # Weight for geometric regularization
@@ -146,19 +153,19 @@ def get_lr(step: int, config: TrainConfig) -> float:
     """Compute learning rate at a given step."""
     # Warmup phase
     if step < config.warmup_steps:
-        return config.learning_rate * (step + 1) / config.warmup_steps
+        return config.base_lr * (step + 1) / config.warmup_steps
 
     # Post-warmup
     progress = (step - config.warmup_steps) / max(config.num_steps - config.warmup_steps, 1)
     progress = min(progress, 1.0)
 
     if config.lr_scheduler == "constant":
-        return config.learning_rate
+        return config.base_lr
     elif config.lr_scheduler == "linear":
-        return config.learning_rate + (config.min_lr - config.learning_rate) * progress
+        return config.base_lr + (config.min_lr - config.base_lr) * progress
     elif config.lr_scheduler == "cosine":
         cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
-        return config.min_lr + (config.learning_rate - config.min_lr) * cosine_decay
+        return config.min_lr + (config.base_lr - config.min_lr) * cosine_decay
     else:
         raise ValueError(f"Unknown scheduler: {config.lr_scheduler}")
 
@@ -254,7 +261,7 @@ class Trainer:
         # Optimizer — only geo_prior params
         self.optimizer = torch.optim.AdamW(
             pipe.unet.geo_prior.parameters(),
-            lr=config.learning_rate,
+            lr=config.base_lr,
             weight_decay=config.weight_decay,
             betas=(0.9, 0.999),
         )
@@ -296,47 +303,62 @@ class Trainer:
         """
         Single rectified flow matching training step.
 
-        Rectified flow with shift:
-            1. Sample t ~ distribution in [0, 1]
-            2. Apply shift: t_s = t * shift / (1 + (shift - 1) * t)
-            3. Interpolate: x_t = (1 - t_s) * x_0 + t_s * noise
-            4. Velocity target: v = noise - x_0  (constant along straight path)
-            5. Loss = MSE(v_pred, v_target)
-
-        The shift biases training toward higher noise levels,
-        matching the inference schedule exactly.
+        Matches Lune trainer formulation:
+            1. Sample t ~ distribution in [0, 1], apply shift
+            2. CFG dropout: zero enc_hs with probability cfg_dropout
+            3. Interpolate: x_t = (1 - t) * x_0 + t * noise
+            4. Velocity target: v = noise - x_0
+            5. Loss = MinSNR-weighted MSE(v_pred, v_target)
         """
         B = latent.shape[0]
 
-        # 1. Sample base timesteps in [0, 1]
+        # 1. Sample base timesteps and apply shift
         t = sample_timesteps(B, self.config, device=self.device)
 
-        # 2. Apply shift to match inference schedule
         shift = self.config.shift
         if shift != 1.0:
             t = t * shift / (1.0 + (shift - 1.0) * t)
 
-        # Clamp to [t_min, t_max] after shift
         t = t.clamp(self.config.t_min, self.config.t_max)
 
-        # 3. Sample noise and interpolate
+        # 2. CFG dropout: zero encoder_hidden_states for unconditional training
+        if self.config.cfg_dropout > 0:
+            drop_mask = torch.rand(B, device=self.device) < self.config.cfg_dropout
+            encoder_hidden_states = encoder_hidden_states.clone()
+            encoder_hidden_states[drop_mask] = 0
+
+        # 3. Interpolate: x_t = (1-t)*x_0 + t*noise
         noise = torch.randn_like(latent)
         t_expand = t.view(B, 1, 1, 1)
         x_t = (1.0 - t_expand) * latent + t_expand * noise
 
-        # 4. Velocity target: v = noise - x_0
-        #    This is the derivative of the straight interpolation path
-        #    and is INDEPENDENT of the shift (shift only changes where we sample)
+        # 4. Velocity target
         v_target = noise - latent
 
-        # 5. Integer timesteps for UNet embedding
-        timesteps = (t * 1000.0).long().clamp(0, 999)
+        # 5. Float timesteps for UNet (NOT quantized — matches Lune)
+        timesteps = t * 1000.0
 
-        # Forward pass — pass continuous t for geo_prior deformation schedule
+        # Forward pass
         v_pred = self.pipe.unet(x_t, timesteps, encoder_hidden_states, t_continuous=t)
 
-        # Task loss: MSE on velocity prediction
-        task_loss = F.mse_loss(v_pred.float(), v_target.float())
+        # 6. Loss with Min-SNR weighting
+        if self.config.min_snr_gamma > 0:
+            # Per-sample MSE
+            loss_per_sample = F.mse_loss(
+                v_pred.float(), v_target.float(), reduction="none"
+            ).mean(dim=[1, 2, 3])  # (B,)
+
+            # SNR = (1-sigma)^2 / sigma^2
+            snr = ((1.0 - t) ** 2) / (t ** 2 + 1e-8)
+            snr_weight = torch.minimum(
+                snr, torch.full_like(snr, self.config.min_snr_gamma)
+            ) / snr
+            # Velocity prediction adjustment
+            snr_weight = snr_weight / (snr + 1.0)
+
+            task_loss = (loss_per_sample * snr_weight).mean()
+        else:
+            task_loss = F.mse_loss(v_pred.float(), v_target.float())
 
         # Geometric regularization
         geo_total, geo_parts = self.pipe.unet.compute_geometric_loss()
@@ -399,7 +421,7 @@ class Trainer:
         accum_logs: Dict[str, float] = {}
 
         print(f"\nStarting training: {config.num_steps} steps, "
-              f"bs={config.batch_size}, lr={config.learning_rate}")
+              f"bs={config.batch_size}, lr={config.base_lr}")
         print(f"  Flow: {config.t_sample}, shift={config.shift}, "
               f"geo_weight={config.geo_loss_weight}, geo_warmup={config.geo_loss_warmup}")
         print(f"  Scheduler: {config.lr_scheduler}, warmup={config.warmup_steps}")
@@ -614,6 +636,102 @@ def _infinite_loader(loader: DataLoader):
 # =============================================================================
 
 @torch.no_grad()
+def pre_encode_hf_dataset(
+    pipe: "Pipeline",
+    dataset_name: str,
+    subset: Optional[str] = None,
+    split: str = "train",
+    image_column: str = "image",
+    prompt_column: str = "prompt",
+    output_path: str = "encoded_dataset.pt",
+    image_size: int = 512,
+    batch_size: int = 16,
+    max_samples: Optional[int] = None,
+):
+    """
+    Pre-encode a HuggingFace dataset to latents + CLIP embeddings.
+    Saves a single .pt file for use with LatentDataset.
+
+    Args:
+        pipe:           Loaded Pipeline with CLIP + VAE
+        dataset_name:   HuggingFace dataset ID (e.g. "AbstractPhil/imagenet-synthetic")
+        subset:         Dataset subset/config name (e.g. "flux_schnell_512")
+        split:          Dataset split
+        image_column:   Column containing PIL images
+        prompt_column:  Column containing text prompts
+        output_path:    Where to save the .pt cache file
+        image_size:     Resize images to this size (square crop)
+        batch_size:     Batch size for encoding
+        max_samples:    Limit number of samples (None = all)
+        vae_scale:      VAE scaling factor (0.18215 for SD1.5)
+    """
+    import datasets as hf_datasets
+    from torchvision import transforms
+
+    # Check cache
+    if os.path.exists(output_path):
+        print(f"✓ Cache exists: {output_path}")
+        data = torch.load(output_path, map_location="cpu", weights_only=True)
+        print(f"  {data['latents'].shape[0]} samples, "
+              f"latents={data['latents'].shape}, enc_hs={data['encoder_hidden_states'].shape}")
+        return output_path
+
+    assert pipe.clip is not None, "Need CLIP for encoding"
+    assert pipe.vae is not None, "Need VAE for encoding"
+
+    # Load HF dataset
+    print(f"Loading dataset: {dataset_name}" + (f" [{subset}]" if subset else ""))
+    ds = hf_datasets.load_dataset(dataset_name, subset, split=split)
+    if max_samples:
+        ds = ds.select(range(min(max_samples, len(ds))))
+    print(f"  {len(ds)} samples")
+
+    transform = transforms.Compose([
+        transforms.Resize(image_size, interpolation=transforms.InterpolationMode.LANCZOS),
+        transforms.CenterCrop(image_size),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5]),
+    ])
+
+    all_latents = []
+    all_enc_hs = []
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+    for i in range(0, len(ds), batch_size):
+        batch = ds[i : i + batch_size]
+        images = []
+        prompts = []
+
+        for j in range(len(batch[image_column])):
+            img = batch[image_column][j].convert("RGB")
+            images.append(transform(img))
+            prompts.append(batch[prompt_column][j])
+
+        # Encode images (encode_image already applies VAE scaling factor)
+        img_batch = torch.stack(images).to(pipe.device, pipe.dtype)
+        with torch.no_grad():
+            latents = pipe.encode_image(img_batch, sample=False)
+            enc_hs = pipe.encode_prompts(prompts)
+
+        all_latents.append(latents.cpu())
+        all_enc_hs.append(enc_hs.cpu())
+
+        done = min(i + batch_size, len(ds))
+        if (i // batch_size + 1) % 20 == 0 or done == len(ds):
+            print(f"  Encoded {done}/{len(ds)}")
+
+    result = {
+        "latents": torch.cat(all_latents, dim=0),
+        "encoder_hidden_states": torch.cat(all_enc_hs, dim=0),
+    }
+    torch.save(result, output_path)
+    print(f"✓ Saved {result['latents'].shape[0]} samples to {output_path}")
+    print(f"  Latents: {result['latents'].shape}")
+    print(f"  Enc_hs:  {result['encoder_hidden_states'].shape}")
+    return output_path
+
+
 def pre_encode_dataset(
     pipe: "Pipeline",
     image_dir: str,
