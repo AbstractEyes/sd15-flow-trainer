@@ -129,6 +129,35 @@ class Pipeline:
               f"layers={self.simplex_config.num_layers}")
         print(f"  Device: {self.device}, Dtype: {self.dtype}")
 
+    def generate(
+        self,
+        prompts,
+        negative_prompt: str = "",
+        num_steps: int = 25,
+        cfg_scale: float = 7.5,
+        width: int = 512,
+        height: int = 512,
+        seed=None,
+        shift: float = 1.0,
+    ):
+        """
+        Generate images from text prompts. See generate.py for full docs.
+
+        Returns:
+            GenerateOutput with .images (B,3,H,W) in [0,1] and .seed
+        """
+        from .generate import generate as _generate
+        return _generate(
+            self, prompts,
+            negative_prompt=negative_prompt,
+            num_steps=num_steps,
+            cfg_scale=cfg_scale,
+            width=width,
+            height=height,
+            seed=seed,
+            shift=shift,
+        )
+
 
 # =============================================================================
 # Constants

@@ -3,3 +3,4 @@ safetensors
 numpy
 huggingface_hub
 transformers
+matplotlib
