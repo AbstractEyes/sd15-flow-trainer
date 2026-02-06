@@ -398,6 +398,28 @@ class SD15VAE(nn.Module):
 # Weight Loading
 # =============================================================================
 
+# Legacy SD1.5 VAE checkpoints use query/key/value/proj_attn for attention.
+# Our model uses diffusers-style to_q/to_k/to_v/to_out.0.
+_VAE_ATTN_KEY_MAP = {
+    ".query.": ".to_q.",
+    ".key.":   ".to_k.",
+    ".value.": ".to_v.",
+    ".proj_attn.": ".to_out.0.",
+}
+
+
+def _remap_vae_attn_keys(state_dict: dict) -> dict:
+    """Remap legacy VAE attention key names to diffusers-style."""
+    remapped = {}
+    for k, v in state_dict.items():
+        new_k = k
+        for old, new in _VAE_ATTN_KEY_MAP.items():
+            if old in new_k:
+                new_k = new_k.replace(old, new)
+                break
+        remapped[new_k] = v
+    return remapped
+
 def load_sd15_vae(
     repo_id: str = "sd-legacy/stable-diffusion-v1-5",
     subfolder: str = "vae",
@@ -421,6 +443,9 @@ def load_sd15_vae(
 
     path = hf_hub_download(repo_id=repo_id, subfolder=subfolder, filename=filename)
     state_dict = load_file(path, device=device)
+
+    # Remap legacy VAE attention keys (query/key/value/proj_attn -> to_q/to_k/to_v/to_out.0)
+    state_dict = _remap_vae_attn_keys(state_dict)
 
     missing, unexpected = vae.load_state_dict(state_dict, strict=False)
 
@@ -447,6 +472,7 @@ def load_vae_from_safetensors(
     """Load VAE weights from a local safetensors file."""
     from safetensors.torch import load_file
     state_dict = load_file(path, device=device)
+    state_dict = _remap_vae_attn_keys(state_dict)
     return vae.load_state_dict(state_dict, strict=strict)
 
 
