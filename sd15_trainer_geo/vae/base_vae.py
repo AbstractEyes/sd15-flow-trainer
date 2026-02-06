@@ -409,7 +409,7 @@ def load_sd15_vae(
     """
     from safetensors.torch import load_file
     from huggingface_hub import hf_hub_download
-    from config.model_config import load_vae_config
+    from ..config.model_config import load_vae_config
 
     if config is None:
         config = load_vae_config(repo_id)
