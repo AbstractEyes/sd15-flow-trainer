@@ -57,8 +57,9 @@ class TrainConfig:
     weight_decay: float = 0.01
 
     # --- Flow matching ---
-    t_min: float = 0.0              # Minimum timestep (0 = clean)
-    t_max: float = 1.0              # Maximum timestep (1 = noise)
+    shift: float = 1.0              # Schedule shift (1.0=linear, >1 biases toward high noise)
+    t_min: float = 0.001            # Minimum timestep (avoid t=0 singularity)
+    t_max: float = 1.0              # Maximum timestep (1 = pure noise)
     t_sample: str = "logit_normal"  # "uniform" or "logit_normal"
     logit_normal_mean: float = 0.0
     logit_normal_std: float = 1.0
@@ -293,34 +294,49 @@ class Trainer:
         encoder_hidden_states: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
         """
-        Single flow matching training step.
+        Single rectified flow matching training step.
 
-        x_t = (1 - t) * x_0 + t * noise
-        v_target = noise - x_0
-        loss = MSE(v_pred, v_target)
+        Rectified flow with shift:
+            1. Sample t ~ distribution in [0, 1]
+            2. Apply shift: t_s = t * shift / (1 + (shift - 1) * t)
+            3. Interpolate: x_t = (1 - t_s) * x_0 + t_s * noise
+            4. Velocity target: v = noise - x_0  (constant along straight path)
+            5. Loss = MSE(v_pred, v_target)
+
+        The shift biases training toward higher noise levels,
+        matching the inference schedule exactly.
         """
         B = latent.shape[0]
 
-        # Sample timesteps
-        t = sample_timesteps(B, self.config, device=self.device)  # (B,)
+        # 1. Sample base timesteps in [0, 1]
+        t = sample_timesteps(B, self.config, device=self.device)
 
-        # Sample noise
+        # 2. Apply shift to match inference schedule
+        shift = self.config.shift
+        if shift != 1.0:
+            t = t * shift / (1.0 + (shift - 1.0) * t)
+
+        # Clamp to [t_min, t_max] after shift
+        t = t.clamp(self.config.t_min, self.config.t_max)
+
+        # 3. Sample noise and interpolate
         noise = torch.randn_like(latent)
-
-        # Interpolate: x_t = (1-t)*x_0 + t*noise
         t_expand = t.view(B, 1, 1, 1)
         x_t = (1.0 - t_expand) * latent + t_expand * noise
 
-        # Velocity target: v = noise - x_0
+        # 4. Velocity target: v = noise - x_0
+        #    This is the derivative of the straight interpolation path
+        #    and is INDEPENDENT of the shift (shift only changes where we sample)
         v_target = noise - latent
 
-        # Integer timesteps for UNet: t in [0,1] -> [0, 999]
+        # 5. Integer timesteps for UNet conditioning
+        #    Use shifted t so the model sees the same (x_t, t) at train and inference
         timesteps = (t * 1000.0).long().clamp(0, 999)
 
         # Forward pass
         v_pred = self.pipe.unet(x_t, timesteps, encoder_hidden_states)
 
-        # Task loss: MSE on velocity
+        # Task loss: MSE on velocity prediction
         task_loss = F.mse_loss(v_pred.float(), v_target.float())
 
         # Geometric regularization
@@ -338,6 +354,8 @@ class Trainer:
             "task_loss": task_loss,
             "geo_loss": geo_total,
             "geo_weight": torch.tensor(geo_weight),
+            "t_mean": t.mean(),
+            "t_std": t.std(),
             **{f"geo/{k}": v for k, v in geo_parts.items()},
         }
 
@@ -383,8 +401,8 @@ class Trainer:
 
         print(f"\nStarting training: {config.num_steps} steps, "
               f"bs={config.batch_size}, lr={config.learning_rate}")
-        print(f"  Flow: {config.t_sample}, geo_weight={config.geo_loss_weight}, "
-              f"geo_warmup={config.geo_loss_warmup}")
+        print(f"  Flow: {config.t_sample}, shift={config.shift}, "
+              f"geo_weight={config.geo_loss_weight}, geo_warmup={config.geo_loss_warmup}")
         print(f"  Scheduler: {config.lr_scheduler}, warmup={config.warmup_steps}")
         print(f"  Output: {config.output_dir}")
         print()
@@ -476,6 +494,7 @@ class Trainer:
             f"loss={logs.get('loss', 0):.4f}",
             f"task={logs.get('task_loss', 0):.4f}",
             f"geo={logs.get('geo_loss', 0):.6f}",
+            f"t={logs.get('t_mean', 0):.3f}±{logs.get('t_std', 0):.3f}",
             f"lr={logs.get('lr', 0):.2e}",
             f"spd={logs.get('steps_per_sec', 0):.1f}it/s",
         ]
@@ -502,6 +521,7 @@ class Trainer:
                 num_steps=self.config.sample_steps,
                 cfg_scale=self.config.sample_cfg,
                 seed=self.config.seed,
+                shift=self.config.shift,
             )
         save_images(
             out,
