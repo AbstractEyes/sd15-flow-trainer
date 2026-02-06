@@ -158,6 +158,39 @@ class Pipeline:
             shift=shift,
         )
 
+    def train_geo(
+        self,
+        dataset,
+        config=None,
+        callbacks=None,
+        resume_from: Optional[str] = None,
+    ):
+        """
+        Train the geometric prior with rectified flow matching.
+
+        Args:
+            dataset:      LatentDataset or any Dataset returning
+                          {"latent": ..., "encoder_hidden_states": ...}
+            config:       TrainConfig (uses defaults if None)
+            callbacks:    Optional list of fn(trainer, step, logs)
+            resume_from:  Path to checkpoint to resume from
+
+        Returns:
+            Trainer instance (for inspection / continued training)
+        """
+        from .trainer import TrainConfig, Trainer
+
+        if config is None:
+            config = TrainConfig()
+
+        trainer = Trainer(self, config)
+
+        if resume_from is not None:
+            trainer.load_checkpoint(resume_from)
+
+        trainer.fit(dataset, callbacks=callbacks)
+        return trainer
+
 
 # =============================================================================
 # Constants
