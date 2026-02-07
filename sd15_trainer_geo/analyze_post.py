@@ -830,20 +830,9 @@ class PostTrainingAnalyzer:
     # =========================================================================
 
     def _encode_prompts(self, prompts: List[str]) -> torch.Tensor:
-        """Encode prompts to CLIP hidden states."""
-        from transformers import CLIPTokenizer
-        tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-        tokens = tokenizer(
-            prompts,
-            padding="max_length",
-            max_length=77,
-            truncation=True,
-            return_tensors="pt",
-        )
-        input_ids = tokens.input_ids.to(self.device)
+        """Encode prompts to CLIP hidden states using pipeline."""
         with torch.no_grad():
-            enc_hs = self.pipe.clip(input_ids)
-        return enc_hs.to(self.dtype)
+            return self.pipe.encode_prompts(prompts).to(self.dtype)
 
     def _reinit_geo_prior(self):
         """Reinitialize geo_prior to fresh random weights."""
