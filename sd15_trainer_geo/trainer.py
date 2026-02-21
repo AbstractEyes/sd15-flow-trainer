@@ -1,16 +1,16 @@
 """
 SD15 Rectified Flow Trainer
 ============================
-Trains the geometric prior (geo_prior) on a frozen Lune/SD1.5 UNet
-using rectified flow matching.
+Trains the geometric prior (geo_prior) and optional GeoVocab conditioner
+on a frozen SD1.5 UNet using rectified flow matching.
 
 Flow matching formulation:
     x_t = (1 - t) * x_0 + t * noise          (interpolation)
     v_target = noise - x_0                     (velocity field)
     loss = MSE(v_predicted, v_target)          (regression target)
 
-Only geo_prior parameters receive gradients. The UNet backbone,
-CLIP, and VAE are frozen.
+Only geo_prior (and geo_conditioner if present) receive gradients.
+The UNet backbone, CLIP, and VAE are frozen.
 
 Usage:
     from sd15_trainer_geo.pipeline import load_pipeline
@@ -112,6 +112,10 @@ class TrainConfig:
     # --- Seed ---
     seed: int = 42
 
+    # --- GeoVocab conditioning ---
+    geovocab_lr_mult: float = 1.0   # LR multiplier for conditioner vs prior
+                                     # >1 to train conditioner faster at start
+
 
 # =============================================================================
 # Timestep Sampling
@@ -170,9 +174,11 @@ def get_lr(step: int, config: TrainConfig) -> float:
         raise ValueError(f"Unknown scheduler: {config.lr_scheduler}")
 
 
-def set_lr(optimizer: torch.optim.Optimizer, lr: float):
+def set_lr(optimizer: torch.optim.Optimizer, lr: float, config: TrainConfig):
+    """Set LR for all param groups, applying per-group multipliers."""
     for pg in optimizer.param_groups:
-        pg["lr"] = lr
+        mult = pg.get("lr_mult", 1.0)
+        pg["lr"] = lr * mult
 
 
 # =============================================================================
@@ -182,32 +188,42 @@ def set_lr(optimizer: torch.optim.Optimizer, lr: float):
 class LatentDataset(Dataset):
     """
     Dataset of pre-encoded latents + CLIP embeddings.
+    Optionally includes gate_vectors and patch_features for geovocab.
 
     Expected format: directory of .pt files, each containing:
         {
-            "latent": (4, 64, 64) tensor,        # VAE-encoded, scaled
-            "encoder_hidden_states": (77, 768),   # CLIP embedding
+            "latent": (4, 64, 64) tensor,
+            "encoder_hidden_states": (77, 768),
+            "gate_vectors": (64, 17),           # optional
+            "patch_features": (64, 128),         # optional
         }
 
     Or a single .pt file with:
         {
             "latents": (N, 4, 64, 64),
             "encoder_hidden_states": (N, 77, 768),
+            "gate_vectors": (N, 64, 17),         # optional
+            "patch_features": (N, 64, 128),       # optional
         }
     """
 
     def __init__(self, path: str, device: str = "cpu"):
         self.device = device
+        self.gate_vectors = None
+        self.patch_features = None
 
         if os.path.isfile(path) and path.endswith(".pt"):
-            # Single file with all data
             data = torch.load(path, map_location=device, weights_only=True)
             self.latents = data["latents"]
             self.encoder_hidden_states = data["encoder_hidden_states"]
+            if "gate_vectors" in data:
+                self.gate_vectors = data["gate_vectors"]
+            if "patch_features" in data:
+                self.patch_features = data["patch_features"]
         elif os.path.isdir(path):
-            # Directory of individual .pt files
             files = sorted(f for f in os.listdir(path) if f.endswith(".pt"))
             latents, enc_hs = [], []
+            gates, patches = [], []
             for f in files:
                 d = torch.load(os.path.join(path, f), map_location=device, weights_only=True)
                 latents.append(d["latent"] if "latent" in d else d["latents"])
@@ -216,23 +232,43 @@ class LatentDataset(Dataset):
                     if "encoder_hidden_states" in d
                     else d["text_embeddings"]
                 )
+                if "gate_vectors" in d:
+                    gates.append(d["gate_vectors"])
+                if "patch_features" in d:
+                    patches.append(d["patch_features"])
             self.latents = torch.stack(latents)
             self.encoder_hidden_states = torch.stack(enc_hs)
+            if gates:
+                self.gate_vectors = torch.stack(gates)
+            if patches:
+                self.patch_features = torch.stack(patches)
         else:
             raise ValueError(f"Invalid dataset path: {path}")
 
         assert self.latents.shape[0] == self.encoder_hidden_states.shape[0]
+
+        has_geo = self.gate_vectors is not None
         print(f"Dataset: {len(self)} samples, latents={self.latents.shape}, "
-              f"enc_hs={self.encoder_hidden_states.shape}")
+              f"enc_hs={self.encoder_hidden_states.shape}"
+              f"{', geo_features=yes' if has_geo else ''}")
+
+    @property
+    def has_geo_features(self) -> bool:
+        return self.gate_vectors is not None and self.patch_features is not None
 
     def __len__(self):
         return self.latents.shape[0]
 
     def __getitem__(self, idx):
-        return {
+        item = {
             "latent": self.latents[idx],
             "encoder_hidden_states": self.encoder_hidden_states[idx],
         }
+        if self.gate_vectors is not None:
+            item["gate_vectors"] = self.gate_vectors[idx]
+        if self.patch_features is not None:
+            item["patch_features"] = self.patch_features[idx]
+        return item
 
 
 # =============================================================================
@@ -243,8 +279,8 @@ class Trainer:
     """
     Rectified flow trainer for the geometric prior.
 
-    Freezes everything except geo_prior, trains with flow matching loss
-    + geometric regularization.
+    Freezes everything except geo_prior (and geo_conditioner if present),
+    trains with flow matching loss + geometric regularization.
     """
 
     def __init__(self, pipe: "Pipeline", config: TrainConfig):
@@ -255,12 +291,29 @@ class Trainer:
         self.step = 0
         self.log_history: List[Dict[str, float]] = []
 
-        # Freeze everything, unfreeze geo_prior
+        # Freeze everything, unfreeze trainable geo params
         self._freeze_backbone()
 
-        # Optimizer — only geo_prior params
+        # Optimizer — separate param groups for prior vs conditioner
+        param_groups = [
+            {
+                "params": list(pipe.unet.geo_prior.parameters()),
+                "lr_mult": 1.0,
+                "name": "geo_prior",
+            },
+        ]
+
+        if hasattr(pipe.unet, "geo_conditioner"):
+            cond_params = list(pipe.unet.geo_conditioner.parameters())
+            if cond_params:
+                param_groups.append({
+                    "params": cond_params,
+                    "lr_mult": config.geovocab_lr_mult,
+                    "name": "geo_conditioner",
+                })
+
         self.optimizer = torch.optim.AdamW(
-            pipe.unet.geo_prior.parameters(),
+            param_groups,
             lr=config.base_lr,
             weight_decay=config.weight_decay,
             betas=(0.9, 0.999),
@@ -277,19 +330,39 @@ class Trainer:
             json.dump(asdict(config), f, indent=2)
 
     def _freeze_backbone(self):
-        """Freeze everything except geo_prior. Keep geo_prior in float32."""
+        """Freeze everything except geo_prior and geo_conditioner. Float32 for trainable."""
         # Freeze entire UNet
         for p in self.pipe.unet.parameters():
             p.requires_grad_(False)
-        # Unfreeze geo_prior and ensure float32 for grad scaler
+
+        # Unfreeze geo_prior
         self.pipe.unet.geo_prior.float()
         for p in self.pipe.unet.geo_prior.parameters():
             p.requires_grad_(True)
 
-        trainable = sum(p.numel() for p in self.pipe.unet.parameters() if p.requires_grad)
+        prior_count = sum(p.numel() for p in self.pipe.unet.geo_prior.parameters())
+        cond_count = 0
+
+        # Unfreeze geo_conditioner if present
+        if hasattr(self.pipe.unet, "geo_conditioner"):
+            self.pipe.unet.geo_conditioner.float()
+            for p in self.pipe.unet.geo_conditioner.parameters():
+                p.requires_grad_(True)
+            cond_count = sum(p.numel() for p in self.pipe.unet.geo_conditioner.parameters())
+
+        trainable = prior_count + cond_count
         frozen = sum(p.numel() for p in self.pipe.unet.parameters() if not p.requires_grad)
+        total = trainable + frozen
+
         print(f"Trainable: {trainable:,} (float32)  Frozen: {frozen:,}  "
-              f"({trainable / (trainable + frozen) * 100:.2f}% trainable)")
+              f"({trainable / total * 100:.2f}% trainable)")
+        if cond_count > 0:
+            print(f"  geo_prior:       {prior_count:,}")
+            print(f"  geo_conditioner: {cond_count:,}")
+
+    def _get_trainable_params(self) -> List[nn.Parameter]:
+        """All parameters receiving gradients."""
+        return [p for p in self.pipe.unet.parameters() if p.requires_grad]
 
     # -----------------------------------------------------------------
     # Flow matching core
@@ -299,6 +372,8 @@ class Trainer:
         self,
         latent: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
+        gate_vectors: Optional[torch.Tensor] = None,
+        patch_features: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Single rectified flow matching training step.
@@ -309,6 +384,9 @@ class Trainer:
             3. Interpolate: x_t = (1 - t) * x_0 + t * noise
             4. Velocity target: v = noise - x_0
             5. Loss = MinSNR-weighted MSE(v_pred, v_target)
+
+        Optional geovocab conditioning:
+            6. Pass gate_vectors + patch_features to UNet if available
         """
         B = latent.shape[0]
 
@@ -326,6 +404,13 @@ class Trainer:
             drop_mask = torch.rand(B, device=self.device) < self.config.cfg_dropout
             encoder_hidden_states = encoder_hidden_states.clone()
             encoder_hidden_states[drop_mask] = 0
+            # Also zero geo features when dropping conditioning
+            if gate_vectors is not None:
+                gate_vectors = gate_vectors.clone()
+                gate_vectors[drop_mask] = 0
+            if patch_features is not None:
+                patch_features = patch_features.clone()
+                patch_features[drop_mask] = 0
 
         # 3. Interpolate: x_t = (1-t)*x_0 + t*noise
         noise = torch.randn_like(latent)
@@ -338,22 +423,30 @@ class Trainer:
         # 5. Float timesteps for UNet (NOT quantized — matches Lune)
         timesteps = t * 1000.0
 
-        # Forward pass
-        v_pred = self.pipe.unet(x_t, timesteps, encoder_hidden_states, t_continuous=t)
+        # Forward pass — with optional geo features
+        fwd_kwargs = dict(
+            sample=x_t,
+            timestep=timesteps,
+            encoder_hidden_states=encoder_hidden_states,
+            t_continuous=t,
+        )
+        if gate_vectors is not None:
+            fwd_kwargs["gate_vectors"] = gate_vectors
+        if patch_features is not None:
+            fwd_kwargs["patch_features"] = patch_features
+
+        v_pred = self.pipe.unet(**fwd_kwargs)
 
         # 6. Loss with Min-SNR weighting
         if self.config.min_snr_gamma > 0:
-            # Per-sample MSE
             loss_per_sample = F.mse_loss(
                 v_pred.float(), v_target.float(), reduction="none"
-            ).mean(dim=[1, 2, 3])  # (B,)
+            ).mean(dim=[1, 2, 3])
 
-            # SNR = (1-sigma)^2 / sigma^2
             snr = ((1.0 - t) ** 2) / (t ** 2 + 1e-8)
             snr_weight = torch.minimum(
                 snr, torch.full_like(snr, self.config.min_snr_gamma)
             ) / snr
-            # Velocity prediction adjustment
             snr_weight = snr_weight / (snr + 1.0)
 
             task_loss = (loss_per_sample * snr_weight).mean()
@@ -395,10 +488,21 @@ class Trainer:
         Args:
             dataset:    LatentDataset or any Dataset returning
                         {"latent": ..., "encoder_hidden_states": ...}
+                        Optionally with "gate_vectors" and "patch_features".
             callbacks:  Optional list of fn(trainer, step, logs) called each log step
         """
         config = self.config
         callbacks = callbacks or []
+
+        # Detect geovocab features
+        has_geo = hasattr(dataset, "has_geo_features") and dataset.has_geo_features
+        if has_geo and self.pipe.has_geovocab:
+            print("GeoVocab conditioning: ACTIVE")
+        elif has_geo and not self.pipe.has_geovocab:
+            print("⚠ Dataset has geo features but pipeline has no geovocab_config — ignoring")
+            has_geo = False
+        elif not has_geo and self.pipe.has_geovocab:
+            print("⚠ Pipeline has geovocab but dataset has no geo features — conditioner trains on zeros")
 
         # Seed
         torch.manual_seed(config.seed)
@@ -431,7 +535,7 @@ class Trainer:
         for self.step in range(self.step, config.num_steps):
             # --- LR schedule ---
             lr = get_lr(self.step, config)
-            set_lr(self.optimizer, lr)
+            set_lr(self.optimizer, lr, config)
 
             # --- Gradient accumulation ---
             self.optimizer.zero_grad()
@@ -442,8 +546,19 @@ class Trainer:
                 latent = batch["latent"].to(self.device, self.dtype)
                 enc_hs = batch["encoder_hidden_states"].to(self.device, self.dtype)
 
+                # Optional geo features
+                gate_vectors = None
+                patch_features = None
+                if has_geo:
+                    gate_vectors = batch["gate_vectors"].to(self.device, torch.float32)
+                    patch_features = batch["patch_features"].to(self.device, torch.float32)
+
                 with torch.amp.autocast("cuda", dtype=self.dtype, enabled=config.use_amp):
-                    losses = self.flow_matching_step(latent, enc_hs)
+                    losses = self.flow_matching_step(
+                        latent, enc_hs,
+                        gate_vectors=gate_vectors,
+                        patch_features=patch_features,
+                    )
 
                 scaled_loss = losses["loss"] / config.grad_accum_steps
                 self.scaler.scale(scaled_loss).backward()
@@ -457,7 +572,7 @@ class Trainer:
             if config.grad_clip > 0:
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(
-                    self.pipe.unet.geo_prior.parameters(),
+                    self._get_trainable_params(),
                     config.grad_clip,
                 )
             self.scaler.step(self.optimizer)
@@ -647,39 +762,46 @@ def pre_encode_hf_dataset(
     image_size: int = 512,
     batch_size: int = 16,
     max_samples: Optional[int] = None,
+    extract_geo_features: bool = False,
 ):
     """
     Pre-encode a HuggingFace dataset to latents + CLIP embeddings.
-    Saves a single .pt file for use with LatentDataset.
+    Optionally extract geometric features via patch-maker.
 
     Args:
-        pipe:           Loaded Pipeline with CLIP + VAE
-        dataset_name:   HuggingFace dataset ID (e.g. "AbstractPhil/imagenet-synthetic")
-        subset:         Dataset subset/config name (e.g. "flux_schnell_512")
-        split:          Dataset split
-        image_column:   Column containing PIL images
-        prompt_column:  Column containing text prompts
-        output_path:    Where to save the .pt cache file
-        image_size:     Resize images to this size (square crop)
-        batch_size:     Batch size for encoding
-        max_samples:    Limit number of samples (None = all)
-        vae_scale:      VAE scaling factor (0.18215 for SD1.5)
+        pipe:                Loaded Pipeline with CLIP + VAE
+        dataset_name:        HuggingFace dataset ID
+        subset:              Dataset subset/config name
+        split:               Dataset split
+        image_column:        Column containing PIL images
+        prompt_column:       Column containing text prompts
+        output_path:         Where to save the .pt cache file
+        image_size:          Resize images to this size
+        batch_size:          Batch size for encoding
+        max_samples:         Limit number of samples
+        extract_geo_features: Whether to also extract gate_vectors + patch_features.
+                              Requires pipe.geo_extractor to be loaded.
     """
     import datasets as hf_datasets
     from torchvision import transforms
 
-    # Check cache
     if os.path.exists(output_path):
         print(f"✓ Cache exists: {output_path}")
         data = torch.load(output_path, map_location="cpu", weights_only=True)
         print(f"  {data['latents'].shape[0]} samples, "
-              f"latents={data['latents'].shape}, enc_hs={data['encoder_hidden_states'].shape}")
+              f"latents={data['latents'].shape}, enc_hs={data['encoder_hidden_states'].shape}"
+              f"{', geo=yes' if 'gate_vectors' in data else ''}")
         return output_path
+
+    if extract_geo_features:
+        assert pipe.geo_extractor is not None, (
+            "extract_geo_features=True but no geo_extractor loaded. "
+            "Pass load_geo_extractor=True to load_pipeline()."
+        )
 
     assert pipe.clip is not None, "Need CLIP for encoding"
     assert pipe.vae is not None, "Need VAE for encoding"
 
-    # Load HF dataset
     print(f"Loading dataset: {dataset_name}" + (f" [{subset}]" if subset else ""))
     ds = hf_datasets.load_dataset(dataset_name, subset, split=split)
     if max_samples:
@@ -695,6 +817,8 @@ def pre_encode_hf_dataset(
 
     all_latents = []
     all_enc_hs = []
+    all_gates = []
+    all_patches = []
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -708,7 +832,6 @@ def pre_encode_hf_dataset(
             images.append(transform(img))
             prompts.append(batch[prompt_column][j])
 
-        # Encode images (encode_image already applies VAE scaling factor)
         img_batch = torch.stack(images).to(pipe.device, pipe.dtype)
         with torch.no_grad():
             latents = pipe.encode_image(img_batch, sample=False)
@@ -716,6 +839,19 @@ def pre_encode_hf_dataset(
 
         all_latents.append(latents.cpu())
         all_enc_hs.append(enc_hs.cpu())
+
+        # Extract geo features from latents if requested
+        if extract_geo_features:
+            # Reshape latents (B, 4, 64, 64) -> (B*K, 8, 16, 16) patches
+            # This requires the TextVAE path — for image latents we'd need
+            # a different approach. For now, use the text path:
+            # prompts → text encoder → TextVAE → (8,16,16) → patch_maker
+            # This is the intended flow for geovocab conditioning.
+            gates, pfeats = pipe.extract_geo_features(
+                latents.view(-1, 8, 16, 16)  # reshape if dims match
+            )
+            all_gates.append(gates.cpu())
+            all_patches.append(pfeats.cpu())
 
         done = min(i + batch_size, len(ds))
         if (i // batch_size + 1) % 20 == 0 or done == len(ds):
@@ -725,10 +861,17 @@ def pre_encode_hf_dataset(
         "latents": torch.cat(all_latents, dim=0),
         "encoder_hidden_states": torch.cat(all_enc_hs, dim=0),
     }
+    if all_gates:
+        result["gate_vectors"] = torch.cat(all_gates, dim=0)
+        result["patch_features"] = torch.cat(all_patches, dim=0)
+
     torch.save(result, output_path)
     print(f"✓ Saved {result['latents'].shape[0]} samples to {output_path}")
     print(f"  Latents: {result['latents'].shape}")
     print(f"  Enc_hs:  {result['encoder_hidden_states'].shape}")
+    if "gate_vectors" in result:
+        print(f"  Gates:   {result['gate_vectors'].shape}")
+        print(f"  Patches: {result['patch_features'].shape}")
     return output_path
 
 
@@ -739,19 +882,11 @@ def pre_encode_dataset(
     output_path: str,
     image_size: int = 512,
     batch_size: int = 8,
+    extract_geo_features: bool = False,
 ):
     """
     Pre-encode images + prompts to latents + CLIP embeddings.
     Saves a single .pt file for use with LatentDataset.
-
-    Args:
-        pipe:           Loaded Pipeline with CLIP + VAE
-        image_dir:      Directory of images (.png, .jpg)
-        prompt_file:    Text file with one prompt per line (matched by filename sort order)
-                        OR a .json file: {"filename.png": "prompt", ...}
-        output_path:    Where to save the .pt file
-        image_size:     Resize images to this size (square crop)
-        batch_size:     Batch size for encoding
     """
     from PIL import Image
     from torchvision import transforms
@@ -759,6 +894,9 @@ def pre_encode_dataset(
 
     assert pipe.clip is not None, "Need CLIP for encoding"
     assert pipe.vae is not None, "Need VAE for encoding"
+
+    if extract_geo_features:
+        assert pipe.geo_extractor is not None, "Need geo_extractor for feature extraction"
 
     # Load prompts
     if prompt_file.endswith(".json"):
@@ -769,14 +907,12 @@ def pre_encode_dataset(
             prompt_list = [line.strip() for line in f if line.strip()]
         prompt_map = None
 
-    # Collect image paths
     exts = {".png", ".jpg", ".jpeg", ".webp"}
     image_files = sorted(
         f for f in os.listdir(image_dir)
         if os.path.splitext(f)[1].lower() in exts
     )
 
-    # Match prompts
     if prompt_map:
         paired = [(f, prompt_map[f]) for f in image_files if f in prompt_map]
     else:
@@ -788,11 +924,13 @@ def pre_encode_dataset(
         transforms.Resize(image_size, interpolation=transforms.InterpolationMode.LANCZOS),
         transforms.CenterCrop(image_size),
         transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5]),  # [0,1] -> [-1,1]
+        transforms.Normalize([0.5], [0.5]),
     ])
 
     all_latents = []
     all_enc_hs = []
+    all_gates = []
+    all_patches = []
 
     for i in range(0, len(paired), batch_size):
         batch_pairs = paired[i:i + batch_size]
@@ -804,13 +942,19 @@ def pre_encode_dataset(
             images.append(transform(img))
             prompts.append(prompt)
 
-        # Stack and encode
         img_batch = torch.stack(images).to(pipe.device, pipe.dtype)
         latents = pipe.encode_image(img_batch, sample=False)
         enc_hs = pipe.encode_prompts(prompts)
 
         all_latents.append(latents.cpu())
         all_enc_hs.append(enc_hs.cpu())
+
+        if extract_geo_features:
+            gates, pfeats = pipe.extract_geo_features(
+                latents.view(-1, 8, 16, 16)
+            )
+            all_gates.append(gates.cpu())
+            all_patches.append(pfeats.cpu())
 
         if (i // batch_size + 1) % 10 == 0:
             print(f"  Encoded {min(i + batch_size, len(paired))}/{len(paired)}")
@@ -819,7 +963,14 @@ def pre_encode_dataset(
         "latents": torch.cat(all_latents, dim=0),
         "encoder_hidden_states": torch.cat(all_enc_hs, dim=0),
     }
+    if all_gates:
+        result["gate_vectors"] = torch.cat(all_gates, dim=0)
+        result["patch_features"] = torch.cat(all_patches, dim=0)
+
     torch.save(result, output_path)
     print(f"✓ Saved {result['latents'].shape[0]} samples to {output_path}")
     print(f"  Latents: {result['latents'].shape}")
     print(f"  Enc_hs:  {result['encoder_hidden_states'].shape}")
+    if "gate_vectors" in result:
+        print(f"  Gates:   {result['gate_vectors'].shape}")
+        print(f"  Patches: {result['patch_features'].shape}")
