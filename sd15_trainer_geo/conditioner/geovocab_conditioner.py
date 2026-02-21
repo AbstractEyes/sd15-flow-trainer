@@ -46,12 +46,12 @@ class GeoVocabConfig:
 
     # Patch maker dimensions (from geovocab-patch-maker config)
     gate_dim: int = 17          # Total gate vector dim (11 local + 6 structural)
-    patch_feat_dim: int = 128   # Learned patch feature dim (embed_dim of patch maker)
+    patch_feat_dim: int = 256   # Learned patch feature dim (embed_dim of patch maker)
     num_patches: int = 64       # Number of patches (MACRO_N)
 
     # VAE source (which text encoder / VAE feeds the patch maker)
-    text_vae_dim: int = 768     # Input dim of text VAE (768 for BERT/Beatrix, 512 for T5)
-    text_vae_bottleneck: int = 256
+    clip_vae_dim: int = 768     # Input dim of ClipVAE (768 for CLIP ViT-L/14)
+    clip_vae_bottleneck: int = 256
 
     # Deformation conditioning path
     deform_hidden: int = 128
@@ -139,7 +139,7 @@ class GeoPatchCrossAttention(nn.Module):
     """
     Cross-attention: CLIP tokens attend to geometric patch features.
 
-    CLIP tokens (B, 77, 768) as queries, patch features (B, 64, 128) as keys/values.
+    CLIP tokens (B, 77, 768) as queries, patch features (B, 64, 256) as keys/values.
     Projects patch features to CLIP dim, computes cross-attention,
     adds geometric structural information to CLIP conditioning.
 
@@ -187,7 +187,7 @@ class GeoPatchCrossAttention(nn.Module):
         """
         Args:
             clip_tokens:    (B, 77, 768) CLIP hidden states
-            patch_features: (B, 64, 128) from patch maker
+            patch_features: (B, 64, 256) from patch maker
             gate_vectors:   (B, 64, 17)  optional, for gate-modulated blend
 
         Returns:
@@ -260,7 +260,7 @@ class GeoVocabConditioner(nn.Module):
         """
         Args:
             gate_vectors:   (B, 64, 17)  geometric property vectors
-            patch_features: (B, 64, 128) learned patch representations
+            patch_features: (B, 64, 256) learned patch representations
             clip_tokens:    (B, 77, 768) CLIP hidden states (for cross-attn path)
 
         Returns:
@@ -284,33 +284,30 @@ class GeoVocabConditioner(nn.Module):
 
 
 # =============================================================================
-# Feature Extraction Pipeline (text → geo features)
+# Feature Extraction Pipeline (patches → geo features)
 # =============================================================================
 
 class GeoFeatureExtractor(nn.Module):
     """
-    Complete text → geometric features pipeline.
+    Patches → geometric features via PatchMaker.
 
-    text_prompt → text_encoder → text_emb → text_vae → (8,16,16) patches
-        → patch_maker → gate_vectors (B, 64, 17) + patch_features (B, 64, 128)
+    CLIP enc_hs → mean-pool → ClipVAE → (8,16,16) patches
+        → patch_maker → gate_vectors (B, 64, 17) + patch_features (B, 64, 256)
+
+    ClipVAE is handled upstream (pre-extraction or pipeline). This class
+    only wraps PatchMaker for the patches → gates+features step.
 
     All components frozen during training. Only the conditioner trains.
     """
 
     def __init__(
         self,
-        text_vae_repo: str = "AbstractPhil/geovae-proto",
-        text_vae_variant: str = "beatrix_vae",  # or "text_vae", "bert_vae"
         patch_maker_repo: str = "AbstractPhil/geovocab-patch-maker",
         device: str = "cuda",
     ):
         super().__init__()
         self.device = device
         self._loaded = False
-
-        # Store repo info for lazy loading
-        self._text_vae_repo = text_vae_repo
-        self._text_vae_variant = text_vae_variant
         self._patch_maker_repo = patch_maker_repo
 
     def _lazy_load(self):
@@ -318,7 +315,12 @@ class GeoFeatureExtractor(nn.Module):
         if self._loaded:
             return
 
-        from geometric_model import load_from_hub as load_patch_maker
+        # Try local import first (when geometric_model.py is in conditioner/),
+        # then fall back to bare import (when it's on sys.path from HF download)
+        try:
+            from .geometric_model import load_from_hub as load_patch_maker
+        except ImportError:
+            from geometric_model import load_from_hub as load_patch_maker
 
         # Load patch maker
         self.patch_maker, self.patch_config = load_patch_maker(
@@ -347,7 +349,10 @@ class GeoFeatureExtractor(nn.Module):
             patch_features: (B, 64, embed_dim)
         """
         self._lazy_load()
-        from geometric_model import extract_features
+        try:
+            from .geometric_model import extract_features
+        except ImportError:
+            from geometric_model import extract_features
         return extract_features(self.patch_maker, patches)
 
     @torch.no_grad()
@@ -358,7 +363,7 @@ class GeoFeatureExtractor(nn.Module):
         """
         Extract from pre-encoded VAE latents (already 8, 16, 16).
 
-        For pre-extraction pipelines where TextVAE output is cached.
+        For pre-extraction pipelines where ClipVAE output is cached.
         """
         return self.extract_from_patches(vae_latents)
 
@@ -423,7 +428,7 @@ if _HAS_SD15_TRAINER:
 
             Additional args:
                 gate_vectors:   (B, 64, 17) from patch maker
-                patch_features: (B, 64, 128) from patch maker
+                patch_features: (B, 64, 256) from patch maker
 
             If gate_vectors/patch_features are None, falls back to
             standard SD15UNetSimplex behavior (timestep-only conditioning).
@@ -548,7 +553,7 @@ def verify_conditioner():
     # Simulate inputs
     B = 2
     gate_vectors = torch.randn(B, 64, 17)
-    patch_features = torch.randn(B, 64, 128)
+    patch_features = torch.randn(B, 64, 256)
     clip_tokens = torch.randn(B, 77, 768)
 
     out = conditioner(gate_vectors, patch_features, clip_tokens)

@@ -153,7 +153,7 @@ class Pipeline:
 
         Returns:
             gate_vectors:   (B, 64, 17)
-            patch_features: (B, 64, 128)
+            patch_features: (B, 64, 256)
         """
         assert self.geo_extractor is not None, (
             "GeoFeatureExtractor not loaded. Pass geovocab_config to load_pipeline() "
@@ -779,7 +779,7 @@ def verify_pipeline(pipe: Pipeline):
     # Add geo features if geovocab
     if pipe.has_geovocab:
         fwd_kwargs["gate_vectors"] = torch.randn(1, 64, 17, device=pipe.device)
-        fwd_kwargs["patch_features"] = torch.randn(1, 64, 128, device=pipe.device)
+        fwd_kwargs["patch_features"] = torch.randn(1, 64, 256, device=pipe.device)
 
     with torch.amp.autocast("cuda", dtype=pipe.dtype):
         pred = pipe.unet(**fwd_kwargs)

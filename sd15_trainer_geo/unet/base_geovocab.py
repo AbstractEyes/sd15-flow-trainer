@@ -35,7 +35,7 @@ class SD15UNetGeoVocab(SD15UNetSimplex):
 
     Two extra paths on top of base simplex:
         1. Gate vectors (64, 17) → per-layer deformation scales
-        2. Patch features (64, 128) → cross-attention with CLIP tokens
+        2. Patch features (64, 256) → cross-attention with CLIP tokens
 
     When gate_vectors/patch_features are None in forward(), falls back
     to standard SD15UNetSimplex behavior.
@@ -68,7 +68,7 @@ class SD15UNetGeoVocab(SD15UNetSimplex):
 
         Additional args:
             gate_vectors:   (B, 64, 17) from patch maker
-            patch_features: (B, 64, 128) from patch maker
+            patch_features: (B, 64, 256) from patch maker
         """
         cfg = self.config
 

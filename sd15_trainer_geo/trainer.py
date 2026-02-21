@@ -195,7 +195,7 @@ class LatentDataset(Dataset):
             "latent": (4, 64, 64) tensor,
             "encoder_hidden_states": (77, 768),
             "gate_vectors": (64, 17),           # optional
-            "patch_features": (64, 128),         # optional
+            "patch_features": (64, 256),         # optional
         }
 
     Or a single .pt file with:
@@ -203,7 +203,7 @@ class LatentDataset(Dataset):
             "latents": (N, 4, 64, 64),
             "encoder_hidden_states": (N, 77, 768),
             "gate_vectors": (N, 64, 17),         # optional
-            "patch_features": (N, 64, 128),       # optional
+            "patch_features": (N, 64, 256),       # optional
         }
     """
 
@@ -843,9 +843,9 @@ def pre_encode_hf_dataset(
         # Extract geo features from latents if requested
         if extract_geo_features:
             # Reshape latents (B, 4, 64, 64) -> (B*K, 8, 16, 16) patches
-            # This requires the TextVAE path — for image latents we'd need
+            # This requires the ClipVAE path — for image latents we'd need
             # a different approach. For now, use the text path:
-            # prompts → text encoder → TextVAE → (8,16,16) → patch_maker
+            # CLIP enc_hs → mean-pool → ClipVAE → (8,16,16) → patch_maker
             # This is the intended flow for geovocab conditioning.
             gates, pfeats = pipe.extract_geo_features(
                 latents.view(-1, 8, 16, 16)  # reshape if dims match
